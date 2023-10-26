@@ -2,7 +2,7 @@ mod auto_size;
 mod main_window;
 mod menu;
 
-pub use main_window::MainWindow;
+pub use main_window::{MainWindow, Update};
 
 macro_rules! weak_cb {
     (|$this:ident $(, $arg_id:tt)*| $body:expr) => {

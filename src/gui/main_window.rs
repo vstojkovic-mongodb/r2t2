@@ -7,6 +7,7 @@ use fltk::menu::MenuBar;
 use fltk::prelude::*;
 use fltk::window::Window;
 
+use crate::ftdc::{MetricKey, Timestamp};
 use crate::Message;
 
 use super::auto_size::AutoSizeExt;
@@ -16,6 +17,14 @@ use super::weak_cb;
 pub struct MainWindow {
     window: Window,
     tx: Sender<Message>,
+}
+
+pub enum Update {
+    DataSetLoaded {
+        start: Timestamp,
+        end: Timestamp,
+        keys: Vec<MetricKey>,
+    },
 }
 
 impl MainWindow {
@@ -47,6 +56,15 @@ impl MainWindow {
 
     pub fn show(&self) {
         self.window.clone().show();
+    }
+
+    pub fn update(&self, update: Update) {
+        match update {
+            Update::DataSetLoaded { start, end, mut keys } => {
+                keys.sort();
+                println!("### DATA SET LOADED: {} {} {:#?}", start, end, keys);
+            }
+        }
     }
 
     fn on_open_file(&self) {
