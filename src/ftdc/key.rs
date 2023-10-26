@@ -47,6 +47,18 @@ impl PartialEq for MetricKey {
 
 impl Eq for MetricKey {}
 
+impl PartialOrd for MetricKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(&other))
+    }
+}
+
+impl Ord for MetricKey {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.key.cmp(&other.key)
+    }
+}
+
 impl<S: AsRef<str>> From<&[S]> for MetricKey {
     fn from(elems: &[S]) -> Self {
         let mut result = Self::new();
