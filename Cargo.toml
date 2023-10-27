@@ -6,10 +6,12 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+anyhow = "1"
 bson = "2.7"
 chrono = "0.4.31"
 flate2 = "1"
 fltk = { version = "1.4.15", features = ["fltk-bundled"] }
+fltk-float = "0.1.1"
 leb128 = "0.2.5"
 lebe = "0.5.2"
 thiserror = "1"

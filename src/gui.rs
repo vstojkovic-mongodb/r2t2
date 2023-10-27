@@ -1,4 +1,4 @@
-mod auto_size;
+mod layout;
 mod main_window;
 mod menu;
 
