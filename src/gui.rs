@@ -1,3 +1,4 @@
+mod chart;
 mod layout;
 mod main_window;
 mod menu;

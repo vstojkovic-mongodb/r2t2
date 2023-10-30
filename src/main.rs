@@ -1,21 +1,23 @@
 use std::collections::HashMap;
 use std::fs::File;
+use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use bson::Document;
 use fltk::app;
-use ftdc::{read_chunk, Chunk, Error, MetricKey, Result, Timestamp};
-use gui::Update;
 
 mod ftdc;
 mod gui;
 
+use self::ftdc::{read_chunk, Chunk, Error, MetricKey, Result, Timestamp};
 use self::gui::MainWindow;
+use self::gui::Update;
 
 #[derive(Debug)]
 pub enum Message {
     OpenFile(PathBuf),
+    SampleMetric(MetricKey, RangeInclusive<Timestamp>, usize),
 }
 
 struct DataSet {
@@ -63,6 +65,45 @@ impl DataSet {
             }
         }
     }
+
+    fn sample_metric(
+        &self,
+        key: &MetricKey,
+        range: RangeInclusive<Timestamp>,
+        num_samples: usize,
+    ) -> Vec<(Timestamp, i64)> {
+        let values = &self.metrics[key];
+
+        let mut start_idx = match self.timestamps.binary_search(range.start()) {
+            Ok(idx) => idx,
+            Err(idx) => idx,
+        };
+        let end_idx = match self.timestamps.binary_search(range.end()) {
+            Ok(idx) => idx,
+            Err(idx) => idx - 1,
+        };
+
+        let mut result = Vec::with_capacity(num_samples);
+        let delta = (range.end().timestamp_millis() - range.start().timestamp_millis())
+            / (num_samples as i64);
+        let mut sample_time = range.start().timestamp_millis();
+
+        while (end_idx - start_idx) >= num_samples {
+            let start_time = self.timestamps[start_idx];
+            if start_time.timestamp_millis() >= sample_time {
+                result.push((start_time, values[start_idx]));
+                sample_time += delta;
+            }
+            start_idx += 1;
+        }
+        result.extend(
+            (start_idx..=end_idx)
+                .into_iter()
+                .map(|idx| (self.timestamps[idx], values[idx])),
+        );
+
+        result
+    }
 }
 
 fn main() {
@@ -94,6 +135,13 @@ fn main() {
                                 });
                             }
                         }
+                    }
+                    Message::SampleMetric(key, range, num_samples) => {
+                        main_window.update(Update::MetricSampled(dataset.sample_metric(
+                            &key,
+                            range,
+                            num_samples,
+                        )));
                     }
                 }
             }

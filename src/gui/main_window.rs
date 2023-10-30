@@ -7,7 +7,7 @@ use chrono::DateTime;
 use fltk::app::{self, Sender};
 use fltk::button::Button;
 use fltk::dialog::{FileDialogType, NativeFileChooser};
-use fltk::enums::Shortcut;
+use fltk::enums::{Color, Shortcut};
 use fltk::frame::Frame;
 use fltk::input::Input;
 use fltk::menu::MenuBar;
@@ -18,6 +18,7 @@ use fltk_float::grid::{CellAlign, Grid};
 use crate::ftdc::{MetricKey, Timestamp};
 use crate::Message;
 
+use super::chart::{draw_data, ChartData, TimeAxis, ValueAxis};
 use super::layout::wrapper_factory;
 use super::menu::MenuExt;
 use super::weak_cb;
@@ -28,6 +29,7 @@ pub struct MainWindow {
     start_input: Input,
     end_input: Input,
     key_input: Input,
+    draw_button: Button,
     chart: Frame,
     state: RefCell<State>,
 }
@@ -38,12 +40,48 @@ pub enum Update {
         end: Timestamp,
         keys: Vec<MetricKey>,
     },
+    MetricSampled(Vec<(Timestamp, i64)>),
 }
 
-#[derive(Default)]
-struct State {
+enum State {
+    Empty,
+    Loaded(DataState),
+    Selected {
+        data: DataState,
+        selector: SelectorState,
+    },
+    Charted {
+        data: DataState,
+        chart: ChartState,
+    },
+}
+
+impl State {
+    fn take(&mut self) -> Self {
+        std::mem::replace(self, State::Empty)
+    }
+}
+
+struct DataState {
     keys: Vec<MetricKey>,
-    time_span: Option<RangeInclusive<Timestamp>>,
+    time_range: RangeInclusive<Timestamp>,
+}
+
+struct SelectorState {
+    key: MetricKey,
+    time_range: RangeInclusive<Timestamp>,
+}
+
+struct ChartState {
+    time_axis: TimeAxis,
+    value_axis: ValueAxis,
+    data: ChartData,
+}
+
+impl Default for State {
+    fn default() -> Self {
+        Self::Empty
+    }
 }
 
 impl MainWindow {
@@ -112,12 +150,14 @@ impl MainWindow {
             .with_stretch(1)
             .with_default_align(CellAlign::Stretch)
             .add();
-        let chart = work_area.span(1, 2).unwrap().wrap(Frame::default());
+        let mut chart = work_area.span(1, 2).unwrap().wrap(Frame::default());
 
         root.cell().unwrap().add(work_area.end());
 
         let root = root.end();
         root.layout_children();
+
+        window.resize_callback(move |_, _, _, _, _| root.layout_children());
 
         let this = Rc::new(Self {
             window,
@@ -125,14 +165,18 @@ impl MainWindow {
             start_input,
             end_input,
             key_input,
-            chart,
+            draw_button: draw_button.clone(),
+            chart: chart.clone(),
             state: Default::default(),
         });
 
         open_item.set_callback(weak_cb!(|this, _| this.on_open_file()));
         exit_item.set_callback(|_| app::quit());
 
+        draw_button.deactivate();
         draw_button.set_callback(weak_cb!(|this, _| this.on_draw()));
+
+        chart.draw(weak_cb!(|this, _| this.draw_chart()));
 
         this
     }
@@ -143,12 +187,36 @@ impl MainWindow {
 
     pub fn update(&self, update: Update) {
         match update {
-            Update::DataSetLoaded { start, end, keys } => {
-                let mut state = self.state.borrow_mut();
-                state.keys = keys;
-                state.time_span = Some(start..=end);
+            Update::DataSetLoaded { start, end, mut keys } => {
+                keys.sort();
 
-                state.keys.sort();
+                let mut state = self.state.borrow_mut();
+                *state = State::Loaded(DataState { keys, time_range: start..=end });
+                drop(state);
+
+                self.draw_button.clone().activate();
+            }
+            Update::MetricSampled(points) => {
+                let value_axis = ValueAxis {
+                    range: 0..=points.iter().map(|p| p.1).max().unwrap_or_default(),
+                };
+
+                let mut state = self.state.borrow_mut();
+
+                let (data, selector) = match state.take() {
+                    State::Selected { data, selector } => (data, selector),
+                    _ => unreachable!(),
+                };
+                let chart = ChartState {
+                    time_axis: TimeAxis { range: selector.time_range },
+                    value_axis,
+                    data: ChartData { points, color: Color::Black },
+                };
+
+                *state = State::Charted { data, chart };
+                drop(state);
+
+                self.chart.clone().redraw();
             }
         }
     }
@@ -163,17 +231,58 @@ impl MainWindow {
     }
 
     fn on_draw(&self) {
-        let (start, end, key) = match self.parse_selector() {
+        let selector = match self.parse_selector() {
             Ok(tuple) => tuple,
             Err(err) => {
                 fltk::dialog::alert_default(&err.to_string());
                 return;
             }
         };
-        println!("### DRAW: {} {} {:?}", start, end, key);
+        self.tx.send(Message::SampleMetric(
+            selector.key.clone(),
+            selector.time_range.clone(),
+            self.chart.w() as _,
+        ));
+
+        let mut state = self.state.borrow_mut();
+        let data = match state.take() {
+            State::Loaded(data) => data,
+            State::Selected { data, selector: _ } => data,
+            State::Charted { data, chart: _ } => data,
+            _ => unreachable!(),
+        };
+        *state = State::Selected { data, selector };
     }
 
-    fn parse_selector(&self) -> anyhow::Result<(Timestamp, Timestamp, MetricKey)> {
+    fn draw_chart(&self) {
+        let x = self.chart.x();
+        let y = self.chart.y();
+        let w = self.chart.w();
+        let h = self.chart.h();
+
+        fltk::draw::draw_rect_fill(x, y, w, h, Color::Background2);
+
+        let state = self.state.borrow();
+        let chart_state = match &*state {
+            State::Charted { data: _, chart } => chart,
+            _ => return,
+        };
+        if chart_state.data.points.is_empty() {
+            return;
+        }
+
+        draw_data(
+            x,
+            y,
+            w,
+            h,
+            &chart_state.time_axis,
+            &chart_state.value_axis,
+            &chart_state.data,
+        );
+    }
+
+    fn parse_selector(&self) -> anyhow::Result<SelectorState> {
         let start = DateTime::parse_from_rfc3339(&self.start_input.value())
             .context("error parsing start time")?
             .into();
@@ -183,20 +292,25 @@ impl MainWindow {
         let key = (&self.key_input.value().split('|').collect::<Vec<_>>()[..]).into();
 
         let state = self.state.borrow();
-        let time_span = state.time_span.as_ref().unwrap();
+        let data = match &*state {
+            State::Loaded(data) => data,
+            State::Selected { data, selector: _ } => data,
+            State::Charted { data, chart: _ } => data,
+            _ => unreachable!(),
+        };
 
-        if !time_span.contains(&start) {
+        if !data.time_range.contains(&start) {
             bail!("start time out of bounds");
         }
 
-        if !time_span.contains(&end) {
+        if !data.time_range.contains(&end) {
             bail!("end time out of bounds");
         }
 
-        if !state.keys.contains(&key) {
+        if !data.keys.contains(&key) {
             bail!("key not in dataset");
         }
 
-        Ok((start, end, key))
+        Ok(SelectorState { key, time_range: start..=end })
     }
 }
