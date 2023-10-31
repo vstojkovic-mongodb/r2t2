@@ -18,7 +18,9 @@ use fltk_float::grid::{CellAlign, Grid};
 use crate::ftdc::{MetricKey, Timestamp};
 use crate::Message;
 
-use super::chart::{draw_data, ChartData, TimeAxis, ValueAxis};
+use super::chart::{
+    draw_data_fill, draw_data_line, draw_value_axis, ChartData, TimeAxis, ValueAxis,
+};
 use super::layout::wrapper_factory;
 use super::menu::MenuExt;
 use super::weak_cb;
@@ -31,6 +33,7 @@ pub struct MainWindow {
     key_input: Input,
     draw_button: Button,
     chart: Frame,
+    data_margins: (i32, i32, i32, i32),
     state: RefCell<State>,
 }
 
@@ -159,6 +162,9 @@ impl MainWindow {
 
         window.resize_callback(move |_, _, _, _, _| root.layout_children());
 
+        fltk::draw::set_font(chart.label_font(), chart.label_size());
+        let (max_val_w, max_val_h) = fltk::draw::measure("9,223,372,036,854,775,808 ", false);
+
         let this = Rc::new(Self {
             window,
             tx,
@@ -167,6 +173,7 @@ impl MainWindow {
             key_input,
             draw_button: draw_button.clone(),
             chart: chart.clone(),
+            data_margins: (max_val_w, 0, 0, max_val_h),
             state: Default::default(),
         });
 
@@ -197,8 +204,14 @@ impl MainWindow {
                 self.draw_button.clone().activate();
             }
             Update::MetricSampled(points) => {
+                let max_value = points.iter().map(|p| p.1).max().unwrap_or_default();
+                let ticks = calculate_ticks(max_value, 5);
+
                 let value_axis = ValueAxis {
-                    range: 0..=points.iter().map(|p| p.1).max().unwrap_or_default(),
+                    range: 0..=max_value,
+                    ticks,
+                    font: (self.chart.label_font(), self.chart.label_size()),
+                    color: Color::Light1,
                 };
 
                 let mut state = self.state.borrow_mut();
@@ -210,7 +223,11 @@ impl MainWindow {
                 let chart = ChartState {
                     time_axis: TimeAxis { range: selector.time_range },
                     value_axis,
-                    data: ChartData { points, color: Color::Black },
+                    data: ChartData {
+                        points,
+                        color: Color::Black,
+                        fill: Some(Color::from_hex(0xeeeeee)),
+                    },
                 };
 
                 *state = State::Charted { data, chart };
@@ -238,10 +255,11 @@ impl MainWindow {
                 return;
             }
         };
+        let (margin_left, _, margin_right, _) = self.data_margins;
         self.tx.send(Message::SampleMetric(
             selector.key.clone(),
             selector.time_range.clone(),
-            self.chart.w() as _,
+            (self.chart.w() - margin_left - margin_right) as _,
         ));
 
         let mut state = self.state.borrow_mut();
@@ -259,6 +277,7 @@ impl MainWindow {
         let y = self.chart.y();
         let w = self.chart.w();
         let h = self.chart.h();
+        let (margin_left, margin_top, margin_right, margin_bottom) = self.data_margins;
 
         fltk::draw::draw_rect_fill(x, y, w, h, Color::Background2);
 
@@ -271,15 +290,37 @@ impl MainWindow {
             return;
         }
 
-        draw_data(
-            x,
-            y,
-            w,
-            h,
+        fltk::draw::push_clip(x, y, w, h);
+
+        draw_data_fill(
+            x + margin_left,
+            y + margin_top,
+            w - margin_left - margin_right,
+            h - margin_top - margin_bottom,
             &chart_state.time_axis,
             &chart_state.value_axis,
             &chart_state.data,
         );
+
+        draw_value_axis(
+            x + margin_left,
+            y + margin_top,
+            w - margin_left - margin_right,
+            h - margin_top - margin_bottom,
+            &chart_state.value_axis,
+        );
+
+        draw_data_line(
+            x + margin_left,
+            y + margin_top,
+            w - margin_left - margin_right,
+            h - margin_top - margin_bottom,
+            &chart_state.time_axis,
+            &chart_state.value_axis,
+            &chart_state.data,
+        );
+
+        fltk::draw::pop_clip();
     }
 
     fn parse_selector(&self) -> anyhow::Result<SelectorState> {
@@ -313,4 +354,16 @@ impl MainWindow {
 
         Ok(SelectorState { key, time_range: start..=end })
     }
+}
+
+fn calculate_ticks(max_value: i64, max_ticks: i64) -> Vec<i64> {
+    let magnitude = 10i64.pow(max_value.ilog10());
+    let mut tick_delta = max_value * (100 / max_ticks) / magnitude;
+    for td in [10, 20, 25, 50, 100, 200, 250, 500, 1000] {
+        if tick_delta < td {
+            tick_delta = td * magnitude / 100;
+            break;
+        }
+    }
+    (0..=max_value).step_by(tick_delta as _).collect()
 }

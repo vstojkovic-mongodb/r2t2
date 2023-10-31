@@ -14,4 +14,5 @@ fltk = { version = "1.4.15", features = ["fltk-bundled"] }
 fltk-float = "0.1.1"
 leb128 = "0.2.5"
 lebe = "0.5.2"
+num-format = "0.4.4"
 thiserror = "1"
