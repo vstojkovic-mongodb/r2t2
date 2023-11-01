@@ -19,7 +19,8 @@ use crate::ftdc::{MetricKey, Timestamp};
 use crate::Message;
 
 use super::chart::{
-    draw_data_fill, draw_data_line, draw_value_axis, ChartData, TimeAxis, ValueAxis,
+    calculate_time_ticks, calculate_value_ticks, draw_data_fill, draw_data_line, draw_time_axis,
+    draw_value_axis, ChartData, ChartStyle, TimeAxis, ValueAxis,
 };
 use super::layout::wrapper_factory;
 use super::menu::MenuExt;
@@ -33,6 +34,7 @@ pub struct MainWindow {
     key_input: Input,
     draw_button: Button,
     chart: Frame,
+    chart_style: ChartStyle,
     data_margins: (i32, i32, i32, i32),
     state: RefCell<State>,
 }
@@ -164,6 +166,18 @@ impl MainWindow {
 
         fltk::draw::set_font(chart.label_font(), chart.label_size());
         let (max_val_w, max_val_h) = fltk::draw::measure("9,223,372,036,854,775,808 ", false);
+        let time_header_h = fltk::draw::height() * 4;
+
+        let chart_style = ChartStyle {
+            time_text_font: (chart.label_font(), chart.label_size()),
+            time_text_color: Color::Foreground,
+            time_tick_color: Color::Light1,
+            value_text_font: (chart.label_font(), chart.label_size()),
+            value_text_color: Color::Foreground,
+            value_tick_color: Color::Light1,
+            data_line_color: Color::Foreground,
+            data_fill_color: Color::from_hex(0xeeeeee),
+        };
 
         let this = Rc::new(Self {
             window,
@@ -173,7 +187,8 @@ impl MainWindow {
             key_input,
             draw_button: draw_button.clone(),
             chart: chart.clone(),
-            data_margins: (max_val_w, 0, 0, max_val_h),
+            chart_style,
+            data_margins: (max_val_w, time_header_h, 0, max_val_h),
             state: Default::default(),
         });
 
@@ -209,14 +224,9 @@ impl MainWindow {
                     .map(|p| p.1)
                     .max_by(f64::total_cmp)
                     .unwrap_or_default();
-                let ticks = calculate_ticks(max_value, 5);
+                let ticks = calculate_value_ticks(max_value, 5);
 
-                let value_axis = ValueAxis {
-                    range: 0f64..=max_value,
-                    ticks,
-                    font: (self.chart.label_font(), self.chart.label_size()),
-                    color: Color::Light1,
-                };
+                let value_axis = ValueAxis { range: 0f64..=max_value, ticks };
 
                 let mut state = self.state.borrow_mut();
 
@@ -225,13 +235,12 @@ impl MainWindow {
                     _ => unreachable!(),
                 };
                 let chart = ChartState {
-                    time_axis: TimeAxis { range: selector.time_range },
-                    value_axis,
-                    data: ChartData {
-                        points,
-                        color: Color::Black,
-                        fill: Some(Color::from_hex(0xeeeeee)),
+                    time_axis: TimeAxis {
+                        range: selector.time_range.clone(),
+                        ticks: calculate_time_ticks(selector.time_range, 6),
                     },
+                    value_axis,
+                    data: ChartData { points },
                 };
 
                 *state = State::Charted { data, chart };
@@ -304,6 +313,7 @@ impl MainWindow {
             &chart_state.time_axis,
             &chart_state.value_axis,
             &chart_state.data,
+            &self.chart_style,
         );
 
         draw_value_axis(
@@ -312,6 +322,17 @@ impl MainWindow {
             w - margin_left - margin_right,
             h - margin_top - margin_bottom,
             &chart_state.value_axis,
+            &self.chart_style,
+        );
+
+        draw_time_axis(
+            x + margin_left,
+            y,
+            w - margin_left - margin_right,
+            h - margin_bottom,
+            &chart_state.time_axis,
+            &self.chart_style,
+            true,
         );
 
         draw_data_line(
@@ -322,6 +343,7 @@ impl MainWindow {
             &chart_state.time_axis,
             &chart_state.value_axis,
             &chart_state.data,
+            &self.chart_style,
         );
 
         fltk::draw::pop_clip();
@@ -358,23 +380,4 @@ impl MainWindow {
 
         Ok(SelectorState { key, time_range: start..=end })
     }
-}
-
-fn calculate_ticks(max_value: f64, max_ticks: usize) -> Vec<f64> {
-    let magnitude = 10f64.powf(max_value.log10().floor());
-    let mut tick_delta = max_value / max_ticks as f64 / magnitude;
-    for td in [0.1, 0.2, 0.25, 0.5, 1.0, 2.0, 2.5, 5.0, 10.0] {
-        if tick_delta < td {
-            tick_delta = td * magnitude;
-            break;
-        }
-    }
-
-    let mut ticks = Vec::with_capacity(max_ticks);
-    let mut tick = 0f64;
-    while tick <= max_value {
-        ticks.push(tick);
-        tick += tick_delta;
-    }
-    ticks
 }
