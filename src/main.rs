@@ -23,7 +23,7 @@ pub enum Message {
 struct DataSet {
     metadata: Document,
     timestamps: Vec<Timestamp>,
-    metrics: HashMap<MetricKey, Vec<i64>>,
+    metrics: HashMap<MetricKey, Vec<f64>>,
 }
 
 impl DataSet {
@@ -52,11 +52,11 @@ impl DataSet {
                     }
                     Chunk::Data(mut chunk) => {
                         self.timestamps.append(&mut chunk.timestamps);
-                        for (key, mut values) in chunk.metrics {
+                        for (key, values) in chunk.metrics {
                             self.metrics
                                 .entry(key)
                                 .or_insert_with(Vec::new)
-                                .append(&mut values);
+                                .extend(values.into_iter().map(|v| v as f64));
                         }
                     }
                 },
@@ -71,7 +71,7 @@ impl DataSet {
         key: &MetricKey,
         range: RangeInclusive<Timestamp>,
         num_samples: usize,
-    ) -> Vec<(Timestamp, i64)> {
+    ) -> Vec<(Timestamp, f64)> {
         let values = &self.metrics[key];
 
         let mut start_idx = match self.timestamps.binary_search(range.start()) {

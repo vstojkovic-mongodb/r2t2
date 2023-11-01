@@ -43,7 +43,7 @@ pub enum Update {
         end: Timestamp,
         keys: Vec<MetricKey>,
     },
-    MetricSampled(Vec<(Timestamp, i64)>),
+    MetricSampled(Vec<(Timestamp, f64)>),
 }
 
 enum State {
@@ -204,11 +204,15 @@ impl MainWindow {
                 self.draw_button.clone().activate();
             }
             Update::MetricSampled(points) => {
-                let max_value = points.iter().map(|p| p.1).max().unwrap_or_default();
+                let max_value = points
+                    .iter()
+                    .map(|p| p.1)
+                    .max_by(f64::total_cmp)
+                    .unwrap_or_default();
                 let ticks = calculate_ticks(max_value, 5);
 
                 let value_axis = ValueAxis {
-                    range: 0..=max_value,
+                    range: 0f64..=max_value,
                     ticks,
                     font: (self.chart.label_font(), self.chart.label_size()),
                     color: Color::Light1,
@@ -356,14 +360,21 @@ impl MainWindow {
     }
 }
 
-fn calculate_ticks(max_value: i64, max_ticks: i64) -> Vec<i64> {
-    let magnitude = 10i64.pow(max_value.ilog10());
-    let mut tick_delta = max_value * (100 / max_ticks) / magnitude;
-    for td in [10, 20, 25, 50, 100, 200, 250, 500, 1000] {
+fn calculate_ticks(max_value: f64, max_ticks: usize) -> Vec<f64> {
+    let magnitude = 10f64.powf(max_value.log10().floor());
+    let mut tick_delta = max_value / max_ticks as f64 / magnitude;
+    for td in [0.1, 0.2, 0.25, 0.5, 1.0, 2.0, 2.5, 5.0, 10.0] {
         if tick_delta < td {
-            tick_delta = td * magnitude / 100;
+            tick_delta = td * magnitude;
             break;
         }
     }
-    (0..=max_value).step_by(tick_delta as _).collect()
+
+    let mut ticks = Vec::with_capacity(max_ticks);
+    let mut tick = 0f64;
+    while tick <= max_value {
+        ticks.push(tick);
+        tick += tick_delta;
+    }
+    ticks
 }

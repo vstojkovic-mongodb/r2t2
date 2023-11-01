@@ -1,12 +1,12 @@
-use std::ops::RangeInclusive;
+use std::ops::{RangeInclusive, Sub};
 
 use fltk::draw;
 use fltk::enums::{Align, Color, Font};
-use num_format::{Locale, ToFormattedString};
+use thousands::Separable;
 
 use crate::ftdc::Timestamp;
 
-pub type DataPoint = (Timestamp, i64);
+pub type DataPoint = (Timestamp, f64);
 
 #[derive(Debug)]
 pub struct TimeAxis {
@@ -15,8 +15,8 @@ pub struct TimeAxis {
 
 #[derive(Debug)]
 pub struct ValueAxis {
-    pub range: RangeInclusive<i64>,
-    pub ticks: Vec<i64>,
+    pub range: RangeInclusive<f64>,
+    pub ticks: Vec<f64>,
     pub font: (Font, i32),
     pub color: Color,
 }
@@ -38,7 +38,8 @@ pub fn draw_value_axis(x: i32, y: i32, w: i32, h: i32, value_axis: &ValueAxis) {
 
         draw::draw_line(x, tick_y, x + w - 1, tick_y);
 
-        let text = format!("{} ", tick.to_formatted_string(&Locale::en));
+        let tick = (tick * 1000.0).round() / 1000.0;
+        let text = format!("{} ", tick).separate_with_commas();
         let (text_w, text_h) = draw::measure(&text, false);
         draw::draw_text2(
             &text,
@@ -114,39 +115,80 @@ pub fn draw_data_fill(
     draw::end_complex_polygon();
 }
 
-struct CoordTransform {
-    domain_min: i64,
-    domain_span: i64,
-    coord_origin: i32,
-    coord_span: i64,
+trait CoordInterpolate: Sub + Copy {
+    fn interpolate(self, min: Self, span: Self::Output, coord_origin: i32, coord_span: i32) -> i32;
 }
 
-impl CoordTransform {
+impl CoordInterpolate for f64 {
+    fn interpolate(self, min: Self, span: Self::Output, coord_origin: i32, coord_span: i32) -> i32 {
+        coord_origin + ((self - min) * coord_span as Self / span) as i32
+    }
+}
+
+impl CoordInterpolate for i64 {
+    fn interpolate(self, min: Self, span: Self::Output, coord_origin: i32, coord_span: i32) -> i32 {
+        coord_origin + ((self - min) * coord_span as Self / span) as i32
+    }
+}
+
+impl CoordInterpolate for Timestamp {
+    fn interpolate(self, min: Self, span: Self::Output, coord_origin: i32, coord_span: i32) -> i32 {
+        self.timestamp_millis().interpolate(
+            min.timestamp_millis(),
+            span.num_milliseconds(),
+            coord_origin,
+            coord_span,
+        )
+    }
+}
+
+struct CoordTransform<D: CoordInterpolate>
+where
+    D::Output: Copy,
+{
+    domain_min: D,
+    domain_span: D::Output,
+    coord_origin: i32,
+    coord_span: i32,
+}
+
+impl<D: CoordInterpolate> CoordTransform<D>
+where
+    D::Output: Copy,
+{
+    fn transform(&self, domain_value: D) -> i32 {
+        domain_value.interpolate(
+            self.domain_min,
+            self.domain_span,
+            self.coord_origin,
+            self.coord_span,
+        )
+    }
+}
+
+impl CoordTransform<Timestamp> {
     fn from_time_axis(time_axis: &TimeAxis, x: i32, w: i32) -> Self {
-        let domain_min = time_axis.range.start().timestamp_millis();
-        let domain_span = time_axis.range.end().timestamp_millis() - domain_min;
+        let domain_min = *time_axis.range.start();
+        let domain_span = *time_axis.range.end() - domain_min;
         let coord_origin = x;
-        let coord_span = (w - 1) as i64;
+        let coord_span = w - 1;
         Self { domain_min, domain_span, coord_origin, coord_span }
     }
+}
 
+impl CoordTransform<f64> {
     fn from_value_axis(value_axis: &ValueAxis, y: i32, h: i32) -> Self {
         let domain_min = *value_axis.range.start();
         let domain_span = *value_axis.range.end() - domain_min;
         let coord_origin = y + h - 1;
-        let coord_span = -(h - 1) as i64;
+        let coord_span = -(h - 1);
         Self { domain_min, domain_span, coord_origin, coord_span }
-    }
-
-    fn transform(&self, domain_value: i64) -> i32 {
-        let offset = domain_value - self.domain_min;
-        self.coord_origin + (offset * self.coord_span / self.domain_span) as i32
     }
 }
 
 struct PointTransform {
-    time_xform: CoordTransform,
-    value_xform: CoordTransform,
+    time_xform: CoordTransform<Timestamp>,
+    value_xform: CoordTransform<f64>,
 }
 
 impl PointTransform {
@@ -159,7 +201,7 @@ impl PointTransform {
 
     fn transform(&self, point: &DataPoint) -> (i32, i32) {
         (
-            self.time_xform.transform(point.0.timestamp_millis()),
+            self.time_xform.transform(point.0),
             self.value_xform.transform(point.1),
         )
     }
