@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::ops::RangeInclusive;
 use std::rc::Rc;
 
-use fltk::enums::{Align, Color, Font};
+use fltk::enums::{Align, Color};
 use fltk::prelude::*;
 use fltk::table::{Table, TableContext};
 use fltk::widget::Widget;
@@ -25,9 +25,11 @@ struct ChartListState {
     style: ChartStyle,
     chart_height: i32,
     chart_spacing: i32,
-    chart_margin: i32,
-    max_time_ticks: usize,  // TODO: Add setter
-    max_value_ticks: usize, // TODO: Add setter
+    key_margin: i32,
+    time_axis_height: i32,
+    time_ticks: usize,
+    value_axis_width: i32,
+    value_ticks: usize,
     time_axis: Option<TimeAxis>,
     rows: Vec<ChartListRow>,
 }
@@ -47,26 +49,29 @@ impl Default for ChartListView {
 impl ChartListView {
     pub fn new(x: i32, y: i32, w: i32, h: i32) -> Self {
         let mut table = Table::new(x, y, w, h, "");
-        table.set_cols(2);
+        table.set_cols(3);
         table.set_rows(0);
         table.set_col_header(true);
-        table.set_row_header(true);
         table.set_color(Color::Background2);
 
-        table.set_col_width(0, 410);
-        table.set_row_header_width(100);
-        table.set_col_header_height(100);
-
-        let state = Rc::new(RefCell::new(ChartListState {
+        let state = ChartListState {
             style: Default::default(),
-            chart_height: 120,
+            chart_height: 100,
             chart_spacing: 20,
-            chart_margin: 10,
-            max_time_ticks: 6,
-            max_value_ticks: 5,
+            key_margin: 10,
+            time_axis_height: 100,
+            time_ticks: 6,
+            value_axis_width: 100,
+            value_ticks: 5,
             time_axis: None,
             rows: Default::default(),
-        }));
+        };
+
+        table.set_col_width(0, state.value_axis_width);
+        table.set_col_width(1, 400);
+        table.set_col_header_height(state.time_axis_height);
+
+        let state = Rc::new(RefCell::new(state));
 
         table.draw_cell({
             let state = Rc::clone(&state);
@@ -92,29 +97,33 @@ impl ChartListView {
     }
 
     pub fn set_style(&mut self, style: ChartStyle) {
-        self.state.borrow_mut().style = style;
+        {
+            self.state.borrow_mut().style = style;
+        }
         self.table.redraw();
     }
 
     pub fn set_time_range<R: Into<Option<RangeInclusive<Timestamp>>>>(&mut self, time_range: R) {
         let mut state = self.state.borrow_mut();
+
         state.time_axis = time_range.into().map(|range| TimeAxis {
             range: range.clone(),
-            ticks: calculate_time_ticks(range, state.max_time_ticks),
+            ticks: calculate_time_ticks(range, state.time_ticks),
         });
-        drop(state);
 
+        drop(state);
         self.update_rows();
     }
 
     pub fn set_data(&mut self, data: Vec<(MetricKey, Vec<DataPoint>)>) {
         let mut state = self.state.borrow_mut();
+
         state.rows = data
             .into_iter()
-            .map(|(key, points)| ChartListRow::new(key, points, state.max_value_ticks))
+            .map(|(key, points)| ChartListRow::new(key, points, state.value_ticks))
             .collect();
-        drop(state);
 
+        drop(state);
         self.update_rows();
     }
 
@@ -135,45 +144,128 @@ impl ChartListView {
     }
 
     pub fn value_axis_width(&self) -> i32 {
-        self.table.row_header_width()
+        self.state.borrow().value_axis_width
     }
 
     pub fn set_value_axis_width(&mut self, width: i32) {
-        self.table.set_row_header_width(width);
+        let mut state = self.state.borrow_mut();
+        state.value_axis_width = width;
+
+        drop(state);
+        let state = self.state.borrow();
+
+        if state.value_ticks > 0 {
+            self.table.set_col_width(0, width);
+        }
+
+        self.table.redraw();
+    }
+
+    pub fn set_value_ticks(&mut self, ticks: usize) {
+        let mut state = self.state.borrow_mut();
+        if state.value_ticks == ticks {
+            return;
+        }
+
+        state.value_ticks = ticks;
+        for row in state.rows.iter_mut() {
+            row.value_axis.ticks = calculate_value_ticks(*row.value_axis.range.end(), ticks);
+        }
+
+        drop(state);
+        let state = self.state.borrow();
+
+        if ticks > 0 {
+            self.table.set_col_width(0, state.value_axis_width);
+        } else {
+            self.table.set_col_width(0, 0);
+        }
+
         self.table.redraw();
     }
 
     pub fn time_axis_height(&self) -> i32 {
-        self.table.col_header_height()
+        self.state.borrow().time_axis_height
     }
 
     pub fn set_time_axis_height(&mut self, height: i32) {
-        self.table.set_col_header_height(height);
+        let mut state = self.state.borrow_mut();
+        state.time_axis_height = height;
+
+        drop(state);
+        let state = self.state.borrow();
+
+        if state.time_ticks > 0 {
+            self.table.set_col_header_height(height);
+        }
+
+        self.table.redraw();
+    }
+
+    pub fn set_time_ticks(&mut self, ticks: usize) {
+        let mut state = self.state.borrow_mut();
+        if state.time_ticks == ticks {
+            return;
+        }
+
+        state.time_ticks = ticks;
+        if let Some(time_axis) = state.time_axis.as_mut() {
+            time_axis.ticks = calculate_time_ticks(time_axis.range.clone(), ticks);
+        }
+
+        drop(state);
+
+        if ticks > 0 {
+            self.table.set_row_header(true);
+        } else {
+            self.table.set_row_header(false);
+        }
+
         self.table.redraw();
     }
 
     pub fn chart_width(&self) -> i32 {
-        self.table.col_width(0)
+        self.table.col_width(1)
     }
 
     pub fn set_chart_width(&mut self, width: i32) {
-        self.table.set_col_width(0, width);
+        self.table.set_col_width(1, width);
         self.table.redraw();
     }
 
     pub fn set_chart_height(&mut self, height: i32) {
-        self.state.borrow_mut().chart_height = height;
-        self.table.set_row_height_all(height);
+        let mut state = self.state.borrow_mut();
+        state.chart_height = height;
+
+        drop(state);
+        let state = self.state.borrow();
+
+        self.table
+            .set_row_height_all(state.chart_height + state.chart_spacing);
         self.table.redraw();
     }
 
-    pub fn set_chart_gap(&mut self, gap: i32) {
-        self.state.borrow_mut().chart_spacing = gap;
+    pub fn set_chart_spacing(&mut self, spacing: i32) {
+        let mut state = self.state.borrow_mut();
+        state.chart_spacing = spacing;
+
+        drop(state);
+        let state = self.state.borrow();
+
+        self.table
+            .set_row_height_all(state.chart_height + state.chart_spacing);
         self.table.redraw();
     }
 
     pub fn set_key_width(&mut self, width: i32) {
-        self.table.set_col_width(1, width);
+        self.table.set_col_width(2, width);
+        self.table.redraw();
+    }
+
+    pub fn set_key_margin(&mut self, margin: i32) {
+        {
+            self.state.borrow_mut().key_margin = margin;
+        }
         self.table.redraw();
     }
 
@@ -218,45 +310,44 @@ fn draw_cell(
     let state = state.borrow();
     let chart_y = y + state.chart_spacing / 2;
     let chart_h = h - state.chart_spacing;
-    let chart_w = w - state.chart_margin;
 
     fltk::draw::push_clip(x, y, w, h);
 
     match ctx {
         TableContext::ColHeader => {
             fltk::draw::draw_rect_fill(x, y, w, h, Color::Background2);
-            if col == 0 {
+            if col == 1 {
                 if let Some(time_axis) = state.time_axis.as_ref() {
-                    draw_time_tick_lines(x, y, chart_w, h, time_axis, &state.style);
-                    draw_time_tick_labels(x, y, chart_w, h, time_axis, &state.style);
+                    draw_time_tick_lines(x, y, w, h, time_axis, &state.style);
+                    draw_time_tick_labels(x, y, w, h, time_axis, &state.style);
                 }
             }
         }
-        TableContext::RowHeader => {
+        TableContext::Cell if col == 0 => {
             fltk::draw::draw_rect_fill(x, y, w, h, Color::Background2);
             let row = &state.rows[row as usize];
-            draw_value_tick_labels(x, chart_y, chart_w, chart_h, &row.value_axis, &state.style);
+            draw_value_tick_labels(x, chart_y, w, chart_h, &row.value_axis, &state.style);
         }
-        TableContext::Cell if col == 0 => {
+        TableContext::Cell if col == 1 => {
             fltk::draw::draw_rect_fill(x, y, w, h, Color::Background2);
             if let Some(time_axis) = state.time_axis.as_ref() {
                 let row = &state.rows[row as usize];
                 draw_data_fill(
                     x,
                     chart_y,
-                    chart_w,
+                    w,
                     chart_h,
                     time_axis,
                     &row.value_axis,
                     &row.data,
                     &state.style,
                 );
-                draw_time_tick_lines(x, y, chart_w, h, time_axis, &state.style);
-                draw_value_tick_lines(x, chart_y, chart_w, chart_h, &row.value_axis, &state.style);
+                draw_time_tick_lines(x, y, w, h, time_axis, &state.style);
+                draw_value_tick_lines(x, chart_y, w, chart_h, &row.value_axis, &state.style);
                 draw_data_line(
                     x,
                     chart_y,
-                    chart_w,
+                    w,
                     chart_h,
                     time_axis,
                     &row.value_axis,
@@ -265,7 +356,7 @@ fn draw_cell(
                 );
             }
         }
-        TableContext::Cell if col == 1 => {
+        TableContext::Cell if col == 2 => {
             fltk::draw::draw_rect_fill(x, y, w, h, Color::Background2);
             fltk::draw::set_font(table.label_font(), table.label_size());
             fltk::draw::set_draw_color(table.label_color());
@@ -281,7 +372,14 @@ fn draw_cell(
                     }
                     key.push_str(elem);
                 }
-                fltk::draw::draw_text2(&key, x, y, w, h, Align::Left);
+                fltk::draw::draw_text2(
+                    &key,
+                    x + state.key_margin,
+                    y,
+                    w - state.key_margin,
+                    h,
+                    Align::Left,
+                );
             }
         }
         _ => (),

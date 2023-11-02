@@ -17,7 +17,7 @@ use self::gui::Update;
 #[derive(Debug)]
 pub enum Message {
     OpenFile(PathBuf),
-    SampleMetric(MetricKey, RangeInclusive<Timestamp>, usize),
+    SampleMetrics(Vec<MetricKey>, RangeInclusive<Timestamp>, usize),
 }
 
 struct DataSet {
@@ -75,44 +75,50 @@ impl DataSet {
         }
     }
 
-    fn sample_metric(
+    fn sample_metrics(
         &self,
-        key: &MetricKey,
+        keys: Vec<MetricKey>,
         range: RangeInclusive<Timestamp>,
         num_samples: usize,
-    ) -> Vec<(Timestamp, f64)> {
-        let values = &self.metrics[key];
+    ) -> Vec<(MetricKey, Vec<(Timestamp, f64)>)> {
+        let mut result = Vec::with_capacity(keys.len());
 
-        let mut start_idx = match self.timestamps.binary_search(range.start()) {
-            Ok(idx) => idx,
-            Err(idx) => idx,
-        };
-        let end_idx = match self.timestamps.binary_search(range.end()) {
-            Ok(idx) => idx,
-            Err(idx) => idx - 1,
-        };
+        for key in keys {
+            let values = &self.metrics[&key];
 
-        let mut result = Vec::with_capacity(num_samples);
-        let delta = (*range.end() - *range.start()).num_milliseconds() / (num_samples as i64);
-        let mut sample_time = range.start().timestamp_millis();
+            let mut start_idx = match self.timestamps.binary_search(range.start()) {
+                Ok(idx) => idx,
+                Err(idx) => idx,
+            };
+            let end_idx = match self.timestamps.binary_search(range.end()) {
+                Ok(idx) => idx,
+                Err(idx) => idx - 1,
+            };
 
-        while (end_idx - start_idx) >= num_samples {
-            let start_time = self.timestamps[start_idx];
-            if start_time.timestamp_millis() >= sample_time {
-                let value = values[start_idx];
-                if !value.is_nan() {
-                    result.push((start_time, value));
+            let mut samples = Vec::with_capacity(num_samples);
+            let delta = (*range.end() - *range.start()).num_milliseconds() / (num_samples as i64);
+            let mut sample_time = range.start().timestamp_millis();
+
+            while (end_idx - start_idx) >= num_samples {
+                let start_time = self.timestamps[start_idx];
+                if start_time.timestamp_millis() >= sample_time {
+                    let value = values[start_idx];
+                    if !value.is_nan() {
+                        samples.push((start_time, value));
+                    }
+                    sample_time += delta;
                 }
-                sample_time += delta;
+                start_idx += 1;
             }
-            start_idx += 1;
+            samples.extend(
+                (start_idx..=end_idx)
+                    .into_iter()
+                    .filter(|&idx| !values[idx].is_nan())
+                    .map(|idx| (self.timestamps[idx], values[idx])),
+            );
+
+            result.push((key, samples));
         }
-        result.extend(
-            (start_idx..=end_idx)
-                .into_iter()
-                .filter(|&idx| !values[idx].is_nan())
-                .map(|idx| (self.timestamps[idx], values[idx])),
-        );
 
         result
     }
@@ -148,9 +154,9 @@ fn main() {
                             }
                         }
                     }
-                    Message::SampleMetric(key, range, num_samples) => {
-                        main_window.update(Update::MetricSampled(dataset.sample_metric(
-                            &key,
+                    Message::SampleMetrics(keys, range, num_samples) => {
+                        main_window.update(Update::MetricsSampled(dataset.sample_metrics(
+                            keys,
                             range,
                             num_samples,
                         )));

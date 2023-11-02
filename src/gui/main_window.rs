@@ -11,17 +11,18 @@ use fltk::enums::Shortcut;
 use fltk::frame::Frame;
 use fltk::input::Input;
 use fltk::menu::MenuBar;
+use fltk::misc::InputChoice;
 use fltk::prelude::*;
 use fltk::window::Window;
 use fltk_float::grid::{CellAlign, Grid};
 use fltk_float::{SimpleWrapper, Size};
 
 use crate::ftdc::{MetricKey, Timestamp};
+use crate::gui::menu::MenuConvenienceExt;
 use crate::Message;
 
 use super::chart::ChartListView;
 use super::layout::wrapper_factory;
-use super::menu::MenuExt;
 use super::weak_cb;
 
 pub struct MainWindow {
@@ -29,7 +30,6 @@ pub struct MainWindow {
     tx: Sender<Message>,
     start_input: Input,
     end_input: Input,
-    key_input: Input,
     draw_button: Button,
     chart: ChartListView,
     state: RefCell<State>,
@@ -41,7 +41,7 @@ pub enum Update {
         end: Timestamp,
         keys: Vec<MetricKey>,
     },
-    MetricSampled(Vec<(Timestamp, f64)>),
+    MetricsSampled(Vec<(MetricKey, Vec<(Timestamp, f64)>)>),
 }
 
 enum State {
@@ -66,7 +66,6 @@ struct DataState {
 }
 
 struct SelectorState {
-    key: MetricKey,
     time_range: RangeInclusive<Timestamp>,
 }
 
@@ -94,8 +93,9 @@ impl MainWindow {
 
         root.row().add();
         let mut menu = root.cell().unwrap().wrap(MenuBar::default());
-        let mut open_item = menu.add_item("&File/_&Open...\t\t", Shortcut::Ctrl | 'o');
-        let mut exit_item = menu.add_item("&File/E&xit\t\t", Shortcut::None);
+        let open_item_id = menu.add_item("&File/_&Open...\t\t", Shortcut::Ctrl | 'o');
+        let exit_item_id = menu.add_item("&File/E&xit\t\t", Shortcut::None);
+        menu.end();
 
         root.row()
             .with_stretch(1)
@@ -114,6 +114,7 @@ impl MainWindow {
         work_area
             .cell()
             .unwrap()
+            .with_horz_align(CellAlign::End)
             .wrap(Frame::default().with_label("Start:"));
         let start_input = work_area.cell().unwrap().wrap(Input::default());
 
@@ -121,6 +122,7 @@ impl MainWindow {
         work_area
             .cell()
             .unwrap()
+            .with_horz_align(CellAlign::End)
             .wrap(Frame::default().with_label("End:"));
         let end_input = work_area.cell().unwrap().wrap(Input::default());
 
@@ -128,8 +130,14 @@ impl MainWindow {
         work_area
             .cell()
             .unwrap()
-            .wrap(Frame::default().with_label("Key:"));
-        let key_input = work_area.cell().unwrap().wrap(Input::default());
+            .with_horz_align(CellAlign::End)
+            .wrap(Frame::default().with_label("Chart Size:"));
+        let mut chart_size_choice = work_area.cell().unwrap().wrap(InputChoice::default());
+        chart_size_choice.input().set_readonly(true);
+        chart_size_choice.add("Small");
+        chart_size_choice.add("Medium");
+        chart_size_choice.add("Large");
+        chart_size_choice.set_value_index(0);
 
         work_area.row().add();
         let mut draw_button = work_area
@@ -160,20 +168,37 @@ impl MainWindow {
         let (max_val_w, _) = fltk::draw::measure("9,223,372,036,854,775,808 ", false);
         chart.set_value_axis_width(max_val_w);
         chart.set_key_width(chart.w() - chart.chart_width() - chart.value_axis_width() - 2);
+        chart.set_chart_height(20);
+        chart.set_chart_spacing(40);
+        chart.set_value_ticks(0);
 
         let this = Rc::new(Self {
             window,
             tx,
             start_input,
             end_input,
-            key_input,
             draw_button: draw_button.clone(),
             chart: chart.clone(),
             state: Default::default(),
         });
 
-        open_item.set_callback(weak_cb!(|this, _| this.on_open_file()));
-        exit_item.set_callback(|_| app::quit());
+        menu.at(open_item_id)
+            .unwrap()
+            .set_callback(weak_cb!(|this, _| this.on_open_file()));
+        menu.at(exit_item_id).unwrap().set_callback(|_| app::quit());
+
+        chart_size_choice.set_callback({
+            let mut chart = chart.clone();
+            move |input| {
+                let size = input.menu_button().value() * 50 + 20;
+                chart.set_chart_height(size);
+                if size >= 70 {
+                    chart.set_value_ticks(5);
+                } else {
+                    chart.set_value_ticks(0);
+                }
+            }
+        });
 
         draw_button.deactivate();
         draw_button.set_callback(weak_cb!(|this, _| this.on_draw()));
@@ -196,7 +221,7 @@ impl MainWindow {
 
                 self.draw_button.clone().activate();
             }
-            Update::MetricSampled(points) => {
+            Update::MetricsSampled(samples) => {
                 let mut state = self.state.borrow_mut();
 
                 let (data, selector) = match state.take() {
@@ -209,7 +234,7 @@ impl MainWindow {
 
                 let mut chart = self.chart.clone();
                 chart.set_time_range(selector.time_range.clone());
-                chart.set_data(vec![(selector.key, points)]);
+                chart.set_data(samples);
             }
         }
     }
@@ -231,11 +256,6 @@ impl MainWindow {
                 return;
             }
         };
-        self.tx.send(Message::SampleMetric(
-            selector.key.clone(),
-            selector.time_range.clone(),
-            self.chart.chart_width() as _,
-        ));
 
         let mut state = self.state.borrow_mut();
         let data = match state.take() {
@@ -244,6 +264,13 @@ impl MainWindow {
             State::Charted(data) => data,
             _ => unreachable!(),
         };
+
+        self.tx.send(Message::SampleMetrics(
+            data.keys.clone(),
+            selector.time_range.clone(),
+            self.chart.chart_width() as _,
+        ));
+
         *state = State::Selected { data, selector };
     }
 
@@ -254,7 +281,6 @@ impl MainWindow {
         let end = DateTime::parse_from_rfc3339(&self.end_input.value())
             .context("error parsing end time")?
             .into();
-        let key = (&self.key_input.value().split('|').collect::<Vec<_>>()[..]).into();
 
         let state = self.state.borrow();
         let data = match &*state {
@@ -272,10 +298,6 @@ impl MainWindow {
             bail!("end time out of bounds");
         }
 
-        if !data.keys.contains(&key) {
-            bail!("key not in dataset");
-        }
-
-        Ok(SelectorState { key, time_range: start..=end })
+        Ok(SelectorState { time_range: start..=end })
     }
 }

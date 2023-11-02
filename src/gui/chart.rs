@@ -57,6 +57,10 @@ pub struct ValueAxis {
 pub type ChartData = Vec<DataPoint>;
 
 pub fn calculate_time_ticks(range: RangeInclusive<Timestamp>, max_ticks: usize) -> Vec<Timestamp> {
+    if max_ticks == 0 {
+        return vec![];
+    }
+
     let tick_delta = (*range.end() - *range.start()).num_milliseconds() / max_ticks as i64;
     let td = TIME_TICK_THRESHOLDS_MILLIS
         .into_iter()
@@ -79,6 +83,10 @@ pub fn calculate_time_ticks(range: RangeInclusive<Timestamp>, max_ticks: usize) 
 }
 
 pub fn calculate_value_ticks(max_value: f64, max_ticks: usize) -> Vec<f64> {
+    if max_ticks == 0 {
+        return vec![];
+    }
+
     let magnitude = 10f64.powf(max_value.log10().floor());
     let mut tick_delta = max_value / max_ticks as f64 / magnitude;
     for td in VALUE_TICK_THRESHOLDS {

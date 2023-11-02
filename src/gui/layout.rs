@@ -4,10 +4,12 @@ use fltk::button::Button;
 use fltk::frame::Frame;
 use fltk::input::Input;
 use fltk::menu::MenuBar;
+use fltk::misc::InputChoice;
 use fltk::prelude::*;
 use fltk_float::button::ButtonElement;
 use fltk_float::frame::FrameElement;
 use fltk_float::input::InputElement;
+use fltk_float::misc::InputChoiceElement;
 use fltk_float::{LayoutElement, LayoutWidgetWrapper, Size, WrapperFactory};
 
 pub fn wrapper_factory() -> Rc<WrapperFactory> {
@@ -60,6 +62,7 @@ thread_local! {
         factory.set_wrapper::<Button, ButtonElement<Button>>();
         factory.set_wrapper::<Frame, FrameElement>();
         factory.set_wrapper::<Input, InputElement<Input>>();
+        factory.set_wrapper::<InputChoice, InputChoiceElement>();
         factory.set_wrapper::<MenuBar, MenuBarElement>();
         Rc::new(factory)
     }
