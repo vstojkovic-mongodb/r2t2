@@ -51,13 +51,22 @@ impl DataSet {
                         }
                     }
                     Chunk::Data(mut chunk) => {
-                        self.timestamps.append(&mut chunk.timestamps);
-                        for (key, values) in chunk.metrics {
-                            self.metrics
-                                .entry(key)
-                                .or_insert_with(Vec::new)
-                                .extend(values.into_iter().map(|v| v as f64));
+                        let num_values = chunk.timestamps.len();
+
+                        for (key, values) in self.metrics.iter_mut() {
+                            match chunk.metrics.remove(key) {
+                                Some(vals) => values.extend(vals.into_iter().map(|v| v as f64)),
+                                None => values.extend((0..num_values).map(|_| f64::NAN)),
+                            };
                         }
+
+                        for (key, values) in chunk.metrics {
+                            let entry = self.metrics.entry(key).or_insert_with(Vec::new);
+                            entry.extend((0..self.timestamps.len()).map(|_| f64::NAN));
+                            entry.extend(values.into_iter().map(|v| v as f64));
+                        }
+
+                        self.timestamps.append(&mut chunk.timestamps);
                     }
                 },
                 Err(Error::EOF) => return Ok(()),
@@ -84,14 +93,16 @@ impl DataSet {
         };
 
         let mut result = Vec::with_capacity(num_samples);
-        let delta = (range.end().timestamp_millis() - range.start().timestamp_millis())
-            / (num_samples as i64);
+        let delta = (*range.end() - *range.start()).num_milliseconds() / (num_samples as i64);
         let mut sample_time = range.start().timestamp_millis();
 
         while (end_idx - start_idx) >= num_samples {
             let start_time = self.timestamps[start_idx];
             if start_time.timestamp_millis() >= sample_time {
-                result.push((start_time, values[start_idx]));
+                let value = values[start_idx];
+                if !value.is_nan() {
+                    result.push((start_time, value));
+                }
                 sample_time += delta;
             }
             start_idx += 1;
@@ -99,6 +110,7 @@ impl DataSet {
         result.extend(
             (start_idx..=end_idx)
                 .into_iter()
+                .filter(|&idx| !values[idx].is_nan())
                 .map(|idx| (self.timestamps[idx], values[idx])),
         );
 
