@@ -1,14 +1,21 @@
-use std::ops::{RangeInclusive, Sub};
+use std::ops::RangeInclusive;
 
-use fltk::draw;
-use fltk::enums::{Align, Color, Font};
-use thousands::Separable;
+use fltk::enums::{Color, Font};
 
 use crate::ftdc::{unix_millis_to_timestamp, Timestamp};
 
+mod draw;
+mod widget;
+
+pub use self::draw::{
+    draw_data_fill, draw_data_line, draw_time_tick_labels, draw_time_tick_lines,
+    draw_value_tick_labels, draw_value_tick_lines,
+};
+pub use self::widget::ChartListView;
+
 pub type DataPoint = (Timestamp, f64);
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ChartStyle {
     pub time_text_font: (Font, i32),
     pub time_text_color: Color,
@@ -18,6 +25,21 @@ pub struct ChartStyle {
     pub value_tick_color: Color,
     pub data_line_color: Color,
     pub data_fill_color: Color,
+}
+
+impl Default for ChartStyle {
+    fn default() -> Self {
+        Self {
+            time_text_font: (Font::Helvetica, 12),
+            time_text_color: Color::Foreground,
+            time_tick_color: Color::Light1,
+            value_text_font: (Font::Helvetica, 12),
+            value_text_color: Color::Foreground,
+            value_tick_color: Color::Light1,
+            data_line_color: Color::Foreground,
+            data_fill_color: Color::from_hex(0xeeeeee),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -32,10 +54,7 @@ pub struct ValueAxis {
     pub ticks: Vec<f64>,
 }
 
-#[derive(Debug)]
-pub struct ChartData {
-    pub points: Vec<DataPoint>,
-}
+pub type ChartData = Vec<DataPoint>;
 
 pub fn calculate_time_ticks(range: RangeInclusive<Timestamp>, max_ticks: usize) -> Vec<Timestamp> {
     let tick_delta = (*range.end() - *range.start()).num_milliseconds() / max_ticks as i64;
@@ -76,237 +95,6 @@ pub fn calculate_value_ticks(max_value: f64, max_ticks: usize) -> Vec<f64> {
         tick += tick_delta;
     }
     ticks
-}
-
-pub fn draw_time_axis(
-    x: i32,
-    y: i32,
-    w: i32,
-    h: i32,
-    time_axis: &TimeAxis,
-    style: &ChartStyle,
-    draw_header: bool,
-) {
-    draw::set_font(style.time_text_font.0, style.time_text_font.1);
-    let text_h = draw::height();
-
-    let xform = CoordTransform::from_time_axis(time_axis, x, w);
-    let mut last_tick: Option<Timestamp> = None;
-    for tick in time_axis.ticks.iter() {
-        let tick_x = xform.transform(*tick);
-
-        draw::set_draw_color(style.time_tick_color);
-        draw::draw_line(tick_x, y, tick_x, y + h - 1);
-
-        if draw_header {
-            draw::set_draw_color(style.time_text_color);
-            if last_tick
-                .map(|t| t.date_naive() != tick.date_naive())
-                .unwrap_or(true)
-            {
-                let text = tick.format("%Y-%m-%d").to_string();
-                let (text_w, _) = draw::measure(&text, false);
-                draw::draw_text2(
-                    &text,
-                    tick_x - text_w / 2,
-                    y + text_h,
-                    text_w,
-                    text_h,
-                    Align::Center,
-                );
-            }
-
-            let text = tick.format("%H:%M:%S").to_string();
-            let (text_w, _) = draw::measure(&text, false);
-            draw::draw_text2(
-                &text,
-                tick_x - text_w / 2,
-                y + text_h * 2,
-                text_w,
-                text_h,
-                Align::Center,
-            );
-
-            last_tick = Some(*tick);
-        }
-    }
-}
-
-pub fn draw_value_axis(x: i32, y: i32, w: i32, h: i32, value_axis: &ValueAxis, style: &ChartStyle) {
-    draw::set_font(style.value_text_font.0, style.value_text_font.1);
-
-    let xform = CoordTransform::from_value_axis(value_axis, y, h);
-    for tick in value_axis.ticks.iter() {
-        let tick_y = xform.transform(*tick);
-
-        draw::set_draw_color(style.value_tick_color);
-        draw::draw_line(x, tick_y, x + w - 1, tick_y);
-
-        draw::set_draw_color(style.value_text_color);
-        let tick = (tick * 1000.0).round() / 1000.0;
-        let text = format!("{} ", tick).separate_with_commas();
-        let (text_w, text_h) = draw::measure(&text, false);
-        draw::draw_text2(
-            &text,
-            x - text_w,
-            tick_y - text_h / 2,
-            text_w,
-            text_h,
-            Align::Right,
-        );
-    }
-}
-
-pub fn draw_data_line(
-    x: i32,
-    y: i32,
-    w: i32,
-    h: i32,
-    time_axis: &TimeAxis,
-    value_axis: &ValueAxis,
-    data: &ChartData,
-    style: &ChartStyle,
-) {
-    if data.points.is_empty() {
-        return;
-    }
-
-    let xform = PointTransform::new(x, y, w, h, time_axis, value_axis);
-
-    draw::set_draw_color(style.data_line_color);
-    draw::begin_line();
-
-    for pt in data.points.iter() {
-        let (pt_x, pt_y) = xform.transform(pt);
-        draw::vertex(pt_x as _, pt_y as _);
-    }
-
-    draw::end_line();
-}
-
-pub fn draw_data_fill(
-    x: i32,
-    y: i32,
-    w: i32,
-    h: i32,
-    time_axis: &TimeAxis,
-    value_axis: &ValueAxis,
-    data: &ChartData,
-    style: &ChartStyle,
-) {
-    if data.points.is_empty() {
-        return;
-    }
-
-    let xform = PointTransform::new(x, y, w, h, time_axis, value_axis);
-
-    draw::set_draw_color(style.data_fill_color);
-    draw::begin_complex_polygon();
-
-    let (left_bottom_x, _) = xform.transform(data.points.first().unwrap());
-    draw::vertex(left_bottom_x as _, xform.value_xform.coord_origin as _);
-
-    for pt in data.points.iter() {
-        let (pt_x, pt_y) = xform.transform(pt);
-        draw::vertex(pt_x as _, pt_y as _);
-    }
-
-    let (right_bottom_x, _) = xform.transform(data.points.last().unwrap());
-    draw::vertex(right_bottom_x as _, xform.value_xform.coord_origin as _);
-
-    draw::end_complex_polygon();
-}
-
-trait CoordInterpolate: Sub + Copy {
-    fn interpolate(self, min: Self, span: Self::Output, coord_origin: i32, coord_span: i32) -> i32;
-}
-
-impl CoordInterpolate for f64 {
-    fn interpolate(self, min: Self, span: Self::Output, coord_origin: i32, coord_span: i32) -> i32 {
-        coord_origin + ((self - min) * coord_span as Self / span) as i32
-    }
-}
-
-impl CoordInterpolate for i64 {
-    fn interpolate(self, min: Self, span: Self::Output, coord_origin: i32, coord_span: i32) -> i32 {
-        coord_origin + ((self - min) * coord_span as Self / span) as i32
-    }
-}
-
-impl CoordInterpolate for Timestamp {
-    fn interpolate(self, min: Self, span: Self::Output, coord_origin: i32, coord_span: i32) -> i32 {
-        self.timestamp_millis().interpolate(
-            min.timestamp_millis(),
-            span.num_milliseconds(),
-            coord_origin,
-            coord_span,
-        )
-    }
-}
-
-struct CoordTransform<D: CoordInterpolate>
-where
-    D::Output: Copy,
-{
-    domain_min: D,
-    domain_span: D::Output,
-    coord_origin: i32,
-    coord_span: i32,
-}
-
-impl<D: CoordInterpolate> CoordTransform<D>
-where
-    D::Output: Copy,
-{
-    fn transform(&self, domain_value: D) -> i32 {
-        domain_value.interpolate(
-            self.domain_min,
-            self.domain_span,
-            self.coord_origin,
-            self.coord_span,
-        )
-    }
-}
-
-impl CoordTransform<Timestamp> {
-    fn from_time_axis(time_axis: &TimeAxis, x: i32, w: i32) -> Self {
-        let domain_min = *time_axis.range.start();
-        let domain_span = *time_axis.range.end() - domain_min;
-        let coord_origin = x;
-        let coord_span = w - 1;
-        Self { domain_min, domain_span, coord_origin, coord_span }
-    }
-}
-
-impl CoordTransform<f64> {
-    fn from_value_axis(value_axis: &ValueAxis, y: i32, h: i32) -> Self {
-        let domain_min = *value_axis.range.start();
-        let domain_span = *value_axis.range.end() - domain_min;
-        let coord_origin = y + h - 1;
-        let coord_span = -(h - 1);
-        Self { domain_min, domain_span, coord_origin, coord_span }
-    }
-}
-
-struct PointTransform {
-    time_xform: CoordTransform<Timestamp>,
-    value_xform: CoordTransform<f64>,
-}
-
-impl PointTransform {
-    fn new(x: i32, y: i32, w: i32, h: i32, time_axis: &TimeAxis, value_axis: &ValueAxis) -> Self {
-        Self {
-            time_xform: CoordTransform::from_time_axis(time_axis, x, w),
-            value_xform: CoordTransform::from_value_axis(value_axis, y, h),
-        }
-    }
-
-    fn transform(&self, point: &DataPoint) -> (i32, i32) {
-        (
-            self.time_xform.transform(point.0),
-            self.value_xform.transform(point.1),
-        )
-    }
 }
 
 fn align_up_to(value: i64, delta: i64) -> i64 {

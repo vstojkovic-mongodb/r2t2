@@ -7,21 +7,19 @@ use chrono::DateTime;
 use fltk::app::{self, Sender};
 use fltk::button::Button;
 use fltk::dialog::{FileDialogType, NativeFileChooser};
-use fltk::enums::{Color, Shortcut};
+use fltk::enums::Shortcut;
 use fltk::frame::Frame;
 use fltk::input::Input;
 use fltk::menu::MenuBar;
 use fltk::prelude::*;
 use fltk::window::Window;
 use fltk_float::grid::{CellAlign, Grid};
+use fltk_float::{SimpleWrapper, Size};
 
 use crate::ftdc::{MetricKey, Timestamp};
 use crate::Message;
 
-use super::chart::{
-    calculate_time_ticks, calculate_value_ticks, draw_data_fill, draw_data_line, draw_time_axis,
-    draw_value_axis, ChartData, ChartStyle, TimeAxis, ValueAxis,
-};
+use super::chart::ChartListView;
 use super::layout::wrapper_factory;
 use super::menu::MenuExt;
 use super::weak_cb;
@@ -33,9 +31,7 @@ pub struct MainWindow {
     end_input: Input,
     key_input: Input,
     draw_button: Button,
-    chart: Frame,
-    chart_style: ChartStyle,
-    data_margins: (i32, i32, i32, i32),
+    chart: ChartListView,
     state: RefCell<State>,
 }
 
@@ -55,10 +51,7 @@ enum State {
         data: DataState,
         selector: SelectorState,
     },
-    Charted {
-        data: DataState,
-        chart: ChartState,
-    },
+    Charted(DataState),
 }
 
 impl State {
@@ -75,12 +68,6 @@ struct DataState {
 struct SelectorState {
     key: MetricKey,
     time_range: RangeInclusive<Timestamp>,
-}
-
-struct ChartState {
-    time_axis: TimeAxis,
-    value_axis: ValueAxis,
-    data: ChartData,
 }
 
 impl Default for State {
@@ -155,7 +142,11 @@ impl MainWindow {
             .with_stretch(1)
             .with_default_align(CellAlign::Stretch)
             .add();
-        let mut chart = work_area.span(1, 2).unwrap().wrap(Frame::default());
+        let mut chart = ChartListView::default();
+        work_area
+            .span(1, 2)
+            .unwrap()
+            .add(SimpleWrapper::new(chart.widget(), Size::default()));
 
         root.cell().unwrap().add(work_area.end());
 
@@ -164,20 +155,11 @@ impl MainWindow {
 
         window.resize_callback(move |_, _, _, _, _| root.layout_children());
 
-        fltk::draw::set_font(chart.label_font(), chart.label_size());
-        let (max_val_w, max_val_h) = fltk::draw::measure("9,223,372,036,854,775,808 ", false);
-        let time_header_h = fltk::draw::height() * 4;
-
-        let chart_style = ChartStyle {
-            time_text_font: (chart.label_font(), chart.label_size()),
-            time_text_color: Color::Foreground,
-            time_tick_color: Color::Light1,
-            value_text_font: (chart.label_font(), chart.label_size()),
-            value_text_color: Color::Foreground,
-            value_tick_color: Color::Light1,
-            data_line_color: Color::Foreground,
-            data_fill_color: Color::from_hex(0xeeeeee),
-        };
+        let style = chart.style();
+        fltk::draw::set_font(style.value_text_font.0, style.value_text_font.1);
+        let (max_val_w, _) = fltk::draw::measure("9,223,372,036,854,775,808 ", false);
+        chart.set_value_axis_width(max_val_w);
+        chart.set_key_width(chart.w() - chart.chart_width() - chart.value_axis_width() - 2);
 
         let this = Rc::new(Self {
             window,
@@ -187,8 +169,6 @@ impl MainWindow {
             key_input,
             draw_button: draw_button.clone(),
             chart: chart.clone(),
-            chart_style,
-            data_margins: (max_val_w, time_header_h, 0, max_val_h),
             state: Default::default(),
         });
 
@@ -197,8 +177,6 @@ impl MainWindow {
 
         draw_button.deactivate();
         draw_button.set_callback(weak_cb!(|this, _| this.on_draw()));
-
-        chart.draw(weak_cb!(|this, _| this.draw_chart()));
 
         this
     }
@@ -219,34 +197,19 @@ impl MainWindow {
                 self.draw_button.clone().activate();
             }
             Update::MetricSampled(points) => {
-                let max_value = points
-                    .iter()
-                    .map(|p| p.1)
-                    .max_by(f64::total_cmp)
-                    .unwrap_or_default();
-                let ticks = calculate_value_ticks(max_value, 5);
-
-                let value_axis = ValueAxis { range: 0f64..=max_value, ticks };
-
                 let mut state = self.state.borrow_mut();
 
                 let (data, selector) = match state.take() {
                     State::Selected { data, selector } => (data, selector),
                     _ => unreachable!(),
                 };
-                let chart = ChartState {
-                    time_axis: TimeAxis {
-                        range: selector.time_range.clone(),
-                        ticks: calculate_time_ticks(selector.time_range, 6),
-                    },
-                    value_axis,
-                    data: ChartData { points },
-                };
 
-                *state = State::Charted { data, chart };
+                *state = State::Charted(data);
                 drop(state);
 
-                self.chart.clone().redraw();
+                let mut chart = self.chart.clone();
+                chart.set_time_range(selector.time_range.clone());
+                chart.set_data(vec![(selector.key, points)]);
             }
         }
     }
@@ -268,85 +231,20 @@ impl MainWindow {
                 return;
             }
         };
-        let (margin_left, _, margin_right, _) = self.data_margins;
         self.tx.send(Message::SampleMetric(
             selector.key.clone(),
             selector.time_range.clone(),
-            (self.chart.w() - margin_left - margin_right) as _,
+            self.chart.chart_width() as _,
         ));
 
         let mut state = self.state.borrow_mut();
         let data = match state.take() {
             State::Loaded(data) => data,
             State::Selected { data, selector: _ } => data,
-            State::Charted { data, chart: _ } => data,
+            State::Charted(data) => data,
             _ => unreachable!(),
         };
         *state = State::Selected { data, selector };
-    }
-
-    fn draw_chart(&self) {
-        let x = self.chart.x();
-        let y = self.chart.y();
-        let w = self.chart.w();
-        let h = self.chart.h();
-        let (margin_left, margin_top, margin_right, margin_bottom) = self.data_margins;
-
-        fltk::draw::draw_rect_fill(x, y, w, h, Color::Background2);
-
-        let state = self.state.borrow();
-        let chart_state = match &*state {
-            State::Charted { data: _, chart } => chart,
-            _ => return,
-        };
-        if chart_state.data.points.is_empty() {
-            return;
-        }
-
-        fltk::draw::push_clip(x, y, w, h);
-
-        draw_data_fill(
-            x + margin_left,
-            y + margin_top,
-            w - margin_left - margin_right,
-            h - margin_top - margin_bottom,
-            &chart_state.time_axis,
-            &chart_state.value_axis,
-            &chart_state.data,
-            &self.chart_style,
-        );
-
-        draw_value_axis(
-            x + margin_left,
-            y + margin_top,
-            w - margin_left - margin_right,
-            h - margin_top - margin_bottom,
-            &chart_state.value_axis,
-            &self.chart_style,
-        );
-
-        draw_time_axis(
-            x + margin_left,
-            y,
-            w - margin_left - margin_right,
-            h - margin_bottom,
-            &chart_state.time_axis,
-            &self.chart_style,
-            true,
-        );
-
-        draw_data_line(
-            x + margin_left,
-            y + margin_top,
-            w - margin_left - margin_right,
-            h - margin_top - margin_bottom,
-            &chart_state.time_axis,
-            &chart_state.value_axis,
-            &chart_state.data,
-            &self.chart_style,
-        );
-
-        fltk::draw::pop_clip();
     }
 
     fn parse_selector(&self) -> anyhow::Result<SelectorState> {
@@ -362,7 +260,7 @@ impl MainWindow {
         let data = match &*state {
             State::Loaded(data) => data,
             State::Selected { data, selector: _ } => data,
-            State::Charted { data, chart: _ } => data,
+            State::Charted(data) => data,
             _ => unreachable!(),
         };
 
