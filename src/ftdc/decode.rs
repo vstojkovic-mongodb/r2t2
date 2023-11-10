@@ -3,7 +3,9 @@ use std::io::Read;
 
 use bson::{Bson, Document};
 
-use super::{unix_millis_to_timestamp, MetricKey, MetricsChunk, Result};
+use crate::metric::{unix_millis_to_timestamp, MetricKey};
+
+use super::{MetricsChunk, Result};
 
 pub(super) struct MetricsDecoder {
     num_deltas: usize,

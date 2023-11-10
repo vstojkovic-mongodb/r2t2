@@ -9,10 +9,12 @@ use fltk::app;
 
 mod ftdc;
 mod gui;
+mod metric;
 
-use self::ftdc::{read_chunk, Chunk, Error, MetricKey, Result, Timestamp};
+use self::ftdc::{read_chunk, Chunk, Error, Result};
 use self::gui::MainWindow;
 use self::gui::Update;
+use self::metric::{MetricKey, Timestamp};
 
 #[derive(Debug)]
 pub enum Message {

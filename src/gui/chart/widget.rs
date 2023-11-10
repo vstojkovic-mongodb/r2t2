@@ -7,7 +7,7 @@ use fltk::prelude::*;
 use fltk::table::{Table, TableContext};
 use fltk::widget::Widget;
 
-use crate::ftdc::{MetricKey, Timestamp};
+use crate::metric::{MetricKey, Timestamp};
 
 use super::{
     calculate_time_ticks, calculate_value_ticks, draw_data_fill, draw_data_line,

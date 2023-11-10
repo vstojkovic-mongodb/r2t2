@@ -4,7 +4,7 @@ use fltk::draw;
 use fltk::enums::Align;
 use thousands::Separable;
 
-use crate::ftdc::Timestamp;
+use crate::metric::Timestamp;
 
 use super::{ChartData, ChartStyle, DataPoint, TimeAxis, ValueAxis};
 

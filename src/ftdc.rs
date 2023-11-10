@@ -9,13 +9,11 @@ use lebe::io::ReadEndian;
 
 mod decode;
 mod error;
-mod key;
-mod time;
+
+use crate::metric::{MetricKey, Timestamp};
 
 use self::decode::MetricsDecoder;
 pub use self::error::Error;
-pub use self::key::MetricKey;
-pub use self::time::{unix_millis_to_timestamp, Timestamp};
 
 pub type Result<T> = std::result::Result<T, Error>;
 

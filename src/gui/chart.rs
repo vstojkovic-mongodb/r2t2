@@ -2,7 +2,7 @@ use std::ops::RangeInclusive;
 
 use fltk::enums::{Color, Font};
 
-use crate::ftdc::{unix_millis_to_timestamp, Timestamp};
+use crate::metric::{unix_millis_to_timestamp, Timestamp};
 
 mod draw;
 mod widget;

@@ -17,8 +17,8 @@ use fltk::window::Window;
 use fltk_float::grid::{CellAlign, Grid};
 use fltk_float::{SimpleWrapper, Size};
 
-use crate::ftdc::{MetricKey, Timestamp};
 use crate::gui::menu::MenuConvenienceExt;
+use crate::metric::{MetricKey, Timestamp};
 use crate::Message;
 
 use super::chart::ChartListView;
