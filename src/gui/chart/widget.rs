@@ -7,7 +7,7 @@ use fltk::prelude::*;
 use fltk::table::{Table, TableContext};
 use fltk::widget::Widget;
 
-use crate::metric::{MetricKey, Timestamp};
+use crate::metric::{Descriptor, MetricKey, Timestamp};
 
 use super::{
     calculate_time_ticks, calculate_value_ticks, draw_data_fill, draw_data_line,
@@ -35,7 +35,7 @@ struct ChartListState {
 }
 
 struct ChartListRow {
-    key: MetricKey,
+    desc: Rc<Descriptor>,
     value_axis: ValueAxis,
     data: ChartData,
 }
@@ -115,7 +115,7 @@ impl ChartListView {
         self.update_rows();
     }
 
-    pub fn set_data(&mut self, data: Vec<(MetricKey, Vec<DataPoint>)>) {
+    pub fn set_data(&mut self, data: Vec<(Rc<Descriptor>, Vec<DataPoint>)>) {
         let mut state = self.state.borrow_mut();
 
         state.rows = data
@@ -283,7 +283,7 @@ impl ChartListView {
 }
 
 impl ChartListRow {
-    fn new(key: MetricKey, points: Vec<DataPoint>, max_ticks: usize) -> Self {
+    fn new(desc: Rc<Descriptor>, points: Vec<DataPoint>, max_ticks: usize) -> Self {
         let max_value = points
             .iter()
             .map(|p| p.1)
@@ -292,7 +292,7 @@ impl ChartListRow {
         let ticks = calculate_value_ticks(max_value, max_ticks);
 
         let value_axis = ValueAxis { range: 0f64..=max_value, ticks };
-        Self { key, value_axis, data: points }
+        Self { desc, value_axis, data: points }
     }
 }
 
@@ -362,18 +362,8 @@ fn draw_cell(
             fltk::draw::set_draw_color(table.label_color());
             if state.time_axis.is_some() {
                 let row = &state.rows[row as usize];
-                let mut key = String::new();
-                let mut first = true;
-                for elem in row.key.iter() {
-                    if first {
-                        first = false;
-                    } else {
-                        key.push('\t');
-                    }
-                    key.push_str(elem);
-                }
                 fltk::draw::draw_text2(
-                    &key,
+                    &row.desc.name,
                     x + state.key_margin,
                     y,
                     w - state.key_margin,

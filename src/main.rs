@@ -6,6 +6,7 @@ use std::rc::Rc;
 
 use bson::Document;
 use fltk::app;
+use metric::{Descriptor, Descriptors};
 
 mod ftdc;
 mod gui;
@@ -19,21 +20,23 @@ use self::metric::{MetricKey, Timestamp};
 #[derive(Debug)]
 pub enum Message {
     OpenFile(PathBuf),
-    SampleMetrics(Vec<MetricKey>, RangeInclusive<Timestamp>, usize),
+    SampleMetrics(Vec<usize>, RangeInclusive<Timestamp>, usize),
 }
 
 struct DataSet {
+    descriptors: Descriptors,
     metadata: Document,
     timestamps: Vec<Timestamp>,
-    metrics: HashMap<MetricKey, Vec<f64>>,
+    raw_data: HashMap<MetricKey, Vec<f64>>,
 }
 
 impl DataSet {
     fn new() -> Self {
         Self {
+            descriptors: Descriptors::new(),
             metadata: Document::new(),
             timestamps: vec![],
-            metrics: HashMap::new(),
+            raw_data: HashMap::new(),
         }
     }
 
@@ -41,7 +44,8 @@ impl DataSet {
         let mut file = File::open(path)?;
         self.metadata.clear();
         self.timestamps.clear();
-        self.metrics.clear();
+        self.raw_data.clear();
+
         loop {
             match read_chunk(&mut file) {
                 Ok(chunk) => match chunk {
@@ -55,17 +59,26 @@ impl DataSet {
                     Chunk::Data(mut chunk) => {
                         let num_values = chunk.timestamps.len();
 
-                        for (key, values) in self.metrics.iter_mut() {
+                        for (key, values) in self.raw_data.iter_mut() {
                             match chunk.metrics.remove(key) {
-                                Some(vals) => values.extend(vals.into_iter().map(|v| v as f64)),
+                                Some(chunk_values) => {
+                                    values.extend(chunk_values.into_iter().map(|v| v as f64))
+                                }
                                 None => values.extend((0..num_values).map(|_| f64::NAN)),
                             };
                         }
 
-                        for (key, values) in chunk.metrics {
-                            let entry = self.metrics.entry(key).or_insert_with(Vec::new);
-                            entry.extend((0..self.timestamps.len()).map(|_| f64::NAN));
-                            entry.extend(values.into_iter().map(|v| v as f64));
+                        for (key, chunk_values) in chunk.metrics {
+                            if !self.descriptors.contains_key(&key) {
+                                self.descriptors
+                                    .add(Descriptor::default_for_key(key.clone()));
+                            }
+                            let values = match self.raw_data.get_mut(&key) {
+                                Some(values) => values,
+                                None => self.raw_data.entry(key).or_insert_with(Vec::new),
+                            };
+                            values.extend((0..self.timestamps.len()).map(|_| f64::NAN));
+                            values.extend(chunk_values.into_iter().map(|v| v as f64));
                         }
 
                         self.timestamps.append(&mut chunk.timestamps);
@@ -79,14 +92,15 @@ impl DataSet {
 
     fn sample_metrics(
         &self,
-        keys: Vec<MetricKey>,
+        ids: Vec<usize>,
         range: RangeInclusive<Timestamp>,
         num_samples: usize,
-    ) -> Vec<(MetricKey, Vec<(Timestamp, f64)>)> {
-        let mut result = Vec::with_capacity(keys.len());
+    ) -> Vec<(Rc<Descriptor>, Vec<(Timestamp, f64)>)> {
+        let mut result = Vec::with_capacity(ids.len());
 
-        for key in keys {
-            let values = &self.metrics[&key];
+        for id in ids {
+            let desc = Rc::clone(&self.descriptors[id]);
+            let values = &self.raw_data[&desc.key];
 
             let mut start_idx = match self.timestamps.binary_search(range.start()) {
                 Ok(idx) => idx,
@@ -106,7 +120,7 @@ impl DataSet {
                 if start_time.timestamp_millis() >= sample_time {
                     let value = values[start_idx];
                     if !value.is_nan() {
-                        samples.push((start_time, value));
+                        samples.push((start_time, value / desc.scale));
                     }
                     sample_time += delta;
                 }
@@ -116,10 +130,10 @@ impl DataSet {
                 (start_idx..=end_idx)
                     .into_iter()
                     .filter(|&idx| !values[idx].is_nan())
-                    .map(|idx| (self.timestamps[idx], values[idx])),
+                    .map(|idx| (self.timestamps[idx], values[idx] / desc.scale)),
             );
 
-            result.push((key, samples));
+            result.push((desc, samples));
         }
 
         result
@@ -151,14 +165,14 @@ fn main() {
                                 main_window.update(Update::DataSetLoaded {
                                     start: *dataset.timestamps.first().unwrap(),
                                     end: *dataset.timestamps.last().unwrap(),
-                                    keys: dataset.metrics.keys().cloned().collect(),
+                                    metrics: dataset.descriptors.iter().collect(),
                                 });
                             }
                         }
                     }
-                    Message::SampleMetrics(keys, range, num_samples) => {
+                    Message::SampleMetrics(ids, range, num_samples) => {
                         main_window.update(Update::MetricsSampled(dataset.sample_metrics(
-                            keys,
+                            ids,
                             range,
                             num_samples,
                         )));

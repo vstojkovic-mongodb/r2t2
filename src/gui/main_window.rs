@@ -18,7 +18,7 @@ use fltk_float::grid::{CellAlign, Grid};
 use fltk_float::{SimpleWrapper, Size};
 
 use crate::gui::menu::MenuConvenienceExt;
-use crate::metric::{MetricKey, Timestamp};
+use crate::metric::{Descriptor, Timestamp};
 use crate::Message;
 
 use super::chart::ChartListView;
@@ -39,9 +39,9 @@ pub enum Update {
     DataSetLoaded {
         start: Timestamp,
         end: Timestamp,
-        keys: Vec<MetricKey>,
+        metrics: Vec<Rc<Descriptor>>,
     },
-    MetricsSampled(Vec<(MetricKey, Vec<(Timestamp, f64)>)>),
+    MetricsSampled(Vec<(Rc<Descriptor>, Vec<(Timestamp, f64)>)>),
 }
 
 enum State {
@@ -61,7 +61,7 @@ impl State {
 }
 
 struct DataState {
-    keys: Vec<MetricKey>,
+    metrics: Vec<Rc<Descriptor>>,
     time_range: RangeInclusive<Timestamp>,
 }
 
@@ -212,11 +212,11 @@ impl MainWindow {
 
     pub fn update(&self, update: Update) {
         match update {
-            Update::DataSetLoaded { start, end, mut keys } => {
-                keys.sort();
+            Update::DataSetLoaded { start, end, mut metrics } => {
+                metrics.sort_by(|lhs, rhs| lhs.name.cmp(&rhs.name));
 
                 let mut state = self.state.borrow_mut();
-                *state = State::Loaded(DataState { keys, time_range: start..=end });
+                *state = State::Loaded(DataState { metrics, time_range: start..=end });
                 drop(state);
 
                 self.draw_button.clone().activate();
@@ -266,7 +266,7 @@ impl MainWindow {
         };
 
         self.tx.send(Message::SampleMetrics(
-            data.keys.clone(),
+            data.metrics.iter().map(|desc| desc.id.clone()).collect(),
             selector.time_range.clone(),
             self.chart.chart_width() as _,
         ));
