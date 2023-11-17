@@ -20,6 +20,7 @@ use self::metric::{MetricKey, Timestamp};
 #[derive(Debug)]
 pub enum Message {
     OpenFile(PathBuf),
+    LoadDescriptors(PathBuf),
     SampleMetrics(Vec<usize>, RangeInclusive<Timestamp>, usize),
 }
 
@@ -90,6 +91,18 @@ impl DataSet {
         }
     }
 
+    fn load_descriptors(&mut self, path: &Path) -> std::io::Result<()> {
+        let file = File::open(path)?;
+        self.descriptors = serde_json::from_reader(file)?;
+        for key in self.raw_data.keys() {
+            if !self.descriptors.contains_key(key) {
+                self.descriptors
+                    .add(Descriptor::default_for_key(key.clone()));
+            }
+        }
+        Ok(())
+    }
+
     fn sample_metrics(
         &self,
         ids: Vec<usize>,
@@ -100,7 +113,13 @@ impl DataSet {
 
         for id in ids {
             let desc = Rc::clone(&self.descriptors[id]);
-            let values = &self.raw_data[&desc.key];
+            let values = match self.raw_data.get(&desc.key) {
+                Some(values) => values,
+                None => {
+                    result.push((desc, vec![]));
+                    continue;
+                }
+            };
 
             let mut start_idx = match self.timestamps.binary_search(range.start()) {
                 Ok(idx) => idx,
@@ -170,6 +189,17 @@ fn main() {
                             }
                         }
                     }
+                    Message::LoadDescriptors(path) => match dataset.load_descriptors(&path) {
+                        Err(err) => {
+                            fltk::dialog::alert_default(&format!(
+                                "Error loading descriptors: {}",
+                                err
+                            ));
+                        }
+                        Ok(()) => main_window.update(Update::DescriptorsLoaded(
+                            dataset.descriptors.iter().collect(),
+                        )),
+                    },
                     Message::SampleMetrics(ids, range, num_samples) => {
                         main_window.update(Update::MetricsSampled(dataset.sample_metrics(
                             ids,

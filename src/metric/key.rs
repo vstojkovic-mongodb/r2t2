@@ -1,6 +1,9 @@
-use std::borrow::Borrow;
-use std::fmt::Debug;
+use std::borrow::{Borrow, Cow};
+use std::fmt::{Debug, Formatter};
 use std::hash::{Hash, Hasher};
+
+use serde::de::{SeqAccess, Visitor};
+use serde::{Deserialize, Deserializer};
 
 #[derive(Clone)]
 pub struct MetricKey {
@@ -66,6 +69,40 @@ impl<S: AsRef<str>> From<&[S]> for MetricKey {
             result.push(elem.as_ref());
         }
         result
+    }
+}
+
+impl<'de> Deserialize<'de> for MetricKey {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct KeyVisitor;
+
+        impl<'de> Visitor<'de> for KeyVisitor {
+            type Value = MetricKey;
+
+            fn expecting(&self, f: &mut Formatter) -> std::fmt::Result {
+                f.write_str("a nonempty sequence of strings")
+            }
+
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+                let mut key = MetricKey::new();
+
+                // NOTE: We have to use Cow, because JSON deserialization might need to unescape
+                // the value, which would require ownership. For more info, see:
+                // https://github.com/serde-rs/serde/issues/1413#issuecomment-494892266
+                key.push(
+                    seq.next_element::<Cow<str>>()?
+                        .ok_or_else(|| serde::de::Error::custom("key cannot be empty"))?
+                        .as_ref(),
+                );
+                while let Some(elem) = seq.next_element::<Cow<str>>()? {
+                    key.push(elem.as_ref());
+                }
+
+                Ok(key)
+            }
+        }
+
+        deserializer.deserialize_seq(KeyVisitor)
     }
 }
 

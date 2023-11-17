@@ -416,6 +416,8 @@ dependencies = [
  "fltk-float",
  "leb128",
  "lebe",
+ "serde",
+ "serde_json",
  "thiserror",
  "thousands",
 ]

@@ -1,7 +1,11 @@
 use std::borrow::Borrow;
 use std::collections::HashMap;
+use std::fmt::Formatter;
 use std::ops::Index;
 use std::rc::Rc;
+
+use serde::de::{SeqAccess, Visitor};
+use serde::{Deserialize, Deserializer};
 
 mod key;
 mod time;
@@ -9,10 +13,15 @@ mod time;
 pub use self::key::MetricKey;
 pub use self::time::{unix_millis_to_timestamp, Timestamp};
 
+#[derive(Debug, Clone, Deserialize)]
 pub struct Descriptor {
+    #[serde(skip)]
     pub id: usize,
+
     pub key: MetricKey,
     pub name: String,
+
+    #[serde(default = "default_scale")]
     pub scale: f64,
 }
 
@@ -37,6 +46,10 @@ impl Descriptor {
 
         Self { id: usize::MAX, key, name, scale: 1.0 }
     }
+}
+
+fn default_scale() -> f64 {
+    1.0
 }
 
 impl Descriptors {
@@ -68,5 +81,31 @@ impl Index<usize> for Descriptors {
     type Output = Rc<Descriptor>;
     fn index(&self, index: usize) -> &Self::Output {
         &self.by_id[index]
+    }
+}
+
+impl<'de> Deserialize<'de> for Descriptors {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct SeqVisitor;
+
+        impl<'de> Visitor<'de> for SeqVisitor {
+            type Value = Descriptors;
+
+            fn expecting(&self, f: &mut Formatter) -> std::fmt::Result {
+                f.write_str("a list of descriptors")
+            }
+
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+                let mut descriptors = Descriptors::new();
+
+                while let Some(desc) = seq.next_element()? {
+                    descriptors.add(desc);
+                }
+
+                Ok(descriptors)
+            }
+        }
+
+        deserializer.deserialize_seq(SeqVisitor)
     }
 }

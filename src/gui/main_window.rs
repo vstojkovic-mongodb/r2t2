@@ -41,6 +41,7 @@ pub enum Update {
         end: Timestamp,
         metrics: Vec<Rc<Descriptor>>,
     },
+    DescriptorsLoaded(Vec<Rc<Descriptor>>),
     MetricsSampled(Vec<(Rc<Descriptor>, Vec<(Timestamp, f64)>)>),
 }
 
@@ -51,7 +52,10 @@ enum State {
         data: DataState,
         selector: SelectorState,
     },
-    Charted(DataState),
+    Charted {
+        data: DataState,
+        selector: SelectorState,
+    },
 }
 
 impl State {
@@ -60,11 +64,13 @@ impl State {
     }
 }
 
+#[derive(Debug)]
 struct DataState {
     metrics: Vec<Rc<Descriptor>>,
     time_range: RangeInclusive<Timestamp>,
 }
 
+#[derive(Debug, Clone)]
 struct SelectorState {
     time_range: RangeInclusive<Timestamp>,
 }
@@ -93,7 +99,8 @@ impl MainWindow {
 
         root.row().add();
         let mut menu = root.cell().unwrap().wrap(MenuBar::default());
-        let open_item_id = menu.add_item("&File/_&Open...\t\t", Shortcut::Ctrl | 'o');
+        let open_item_id = menu.add_item("&File/&Open...\t\t", Shortcut::Ctrl | 'o');
+        let load_descriptors_id = menu.add_item("&File/_&Load Descriptors...", Shortcut::None);
         let exit_item_id = menu.add_item("&File/E&xit\t\t", Shortcut::None);
         menu.end();
 
@@ -185,6 +192,9 @@ impl MainWindow {
         menu.at(open_item_id)
             .unwrap()
             .set_callback(weak_cb!(|this, _| this.on_open_file()));
+        menu.at(load_descriptors_id)
+            .unwrap()
+            .set_callback(weak_cb!(|this, _| this.on_load_descriptors()));
         menu.at(exit_item_id).unwrap().set_callback(|_| app::quit());
 
         chart_size_choice.set_callback({
@@ -221,6 +231,31 @@ impl MainWindow {
 
                 self.draw_button.clone().activate();
             }
+            Update::DescriptorsLoaded(mut descriptors) => {
+                let mut state = self.state.borrow_mut();
+
+                let (mut data, selector) = match state.take() {
+                    State::Empty => return,
+                    State::Loaded(data) => (data, None),
+                    State::Selected { data, selector } => (data, Some(selector)),
+                    State::Charted { data, selector } => (data, Some(selector)),
+                };
+
+                descriptors.sort_by(|lhs, rhs| lhs.name.cmp(&rhs.name));
+                data.metrics = descriptors;
+                if selector.is_none() {
+                    *state = State::Loaded(data);
+                    return;
+                }
+                let selector = selector.unwrap();
+
+                self.tx.send(Message::SampleMetrics(
+                    data.metrics.iter().map(|desc| desc.id.clone()).collect(),
+                    selector.time_range.clone(),
+                    self.chart.chart_width() as _,
+                ));
+                *state = State::Selected { data, selector };
+            }
             Update::MetricsSampled(samples) => {
                 let mut state = self.state.borrow_mut();
 
@@ -229,11 +264,11 @@ impl MainWindow {
                     _ => unreachable!(),
                 };
 
-                *state = State::Charted(data);
+                *state = State::Charted { data, selector: selector.clone() };
                 drop(state);
 
                 let mut chart = self.chart.clone();
-                chart.set_time_range(selector.time_range.clone());
+                chart.set_time_range(selector.time_range);
                 chart.set_data(samples);
             }
         }
@@ -245,6 +280,16 @@ impl MainWindow {
 
         if let Some(filename) = dialog.filenames().first() {
             self.tx.send(Message::OpenFile(filename.clone()));
+        }
+    }
+
+    fn on_load_descriptors(&self) {
+        let mut dialog = NativeFileChooser::new(FileDialogType::BrowseFile);
+        dialog.set_filter("JSON Files\t*.json");
+        dialog.show();
+
+        if let Some(filename) = dialog.filenames().first() {
+            self.tx.send(Message::LoadDescriptors(filename.clone()));
         }
     }
 
@@ -261,7 +306,7 @@ impl MainWindow {
         let data = match state.take() {
             State::Loaded(data) => data,
             State::Selected { data, selector: _ } => data,
-            State::Charted(data) => data,
+            State::Charted { data, selector: _ } => data,
             _ => unreachable!(),
         };
 
@@ -286,7 +331,7 @@ impl MainWindow {
         let data = match &*state {
             State::Loaded(data) => data,
             State::Selected { data, selector: _ } => data,
-            State::Charted(data) => data,
+            State::Charted { data, selector: _ } => data,
             _ => unreachable!(),
         };
 
