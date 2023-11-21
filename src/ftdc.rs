@@ -45,6 +45,7 @@ pub fn read_chunk<R: Read>(reader: &mut R) -> Result<Chunk> {
     }
 }
 
+#[allow(dead_code)]
 pub fn skip_chunk<R: Read + Seek>(reader: &mut R) -> Result<()> {
     let len = read_chunk_len(reader)?;
     reader.seek(SeekFrom::Current((len - 4) as i64))?;
