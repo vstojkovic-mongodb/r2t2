@@ -11,7 +11,7 @@ pub use self::draw::{
     draw_data_fill, draw_data_line, draw_time_tick_labels, draw_time_tick_lines,
     draw_value_tick_labels, draw_value_tick_lines,
 };
-pub use self::widget::ChartListView;
+pub use self::widget::{ChartListData, ChartListSection, ChartListView, SectionState};
 
 pub type DataPoint = (Timestamp, f64);
 

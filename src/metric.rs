@@ -4,7 +4,7 @@ use std::fmt::Formatter;
 use std::ops::Index;
 use std::rc::Rc;
 
-use serde::de::{SeqAccess, Visitor};
+use serde::de::{DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 
 mod key;
@@ -25,9 +25,16 @@ pub struct Descriptor {
     pub scale: f64,
 }
 
+#[derive(Debug, Clone)]
+pub struct Section {
+    pub name: String,
+    pub metrics: Vec<Rc<Descriptor>>,
+}
+
 pub struct Descriptors {
     by_id: Vec<Rc<Descriptor>>,
     by_key: HashMap<MetricKey, Vec<Rc<Descriptor>>>,
+    sections: Vec<Section>,
 }
 
 impl Descriptor {
@@ -54,7 +61,15 @@ fn default_scale() -> f64 {
 
 impl Descriptors {
     pub fn new() -> Self {
-        Self { by_id: Vec::new(), by_key: HashMap::new() }
+        Self {
+            by_id: Vec::new(),
+            by_key: HashMap::new(),
+            sections: Vec::new(),
+        }
+    }
+
+    pub fn begin_section(&mut self, name: String) {
+        self.sections.push(Section { name, metrics: Vec::new() });
     }
 
     pub fn add(&mut self, mut desc: Descriptor) {
@@ -65,15 +80,16 @@ impl Descriptors {
         self.by_key
             .entry(desc.key.clone())
             .or_insert_with(Vec::new)
-            .push(desc);
+            .push(Rc::clone(&desc));
+        self.sections.last_mut().unwrap().metrics.push(desc);
     }
 
     pub fn contains_key(&self, key: &MetricKey) -> bool {
         self.by_key.contains_key(key)
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = Rc<Descriptor>> + '_ {
-        self.by_id.iter().map(|desc| Rc::clone(desc))
+    pub fn sections(&self) -> &Vec<Section> {
+        &self.sections
     }
 }
 
@@ -86,26 +102,57 @@ impl Index<usize> for Descriptors {
 
 impl<'de> Deserialize<'de> for Descriptors {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct SeqVisitor;
+        struct MapVisitor;
+        struct SeqVisitor<'d> {
+            descriptors: &'d mut Descriptors,
+        }
 
-        impl<'de> Visitor<'de> for SeqVisitor {
-            type Value = Descriptors;
+        impl<'de, 'd> DeserializeSeed<'de> for SeqVisitor<'d> {
+            type Value = Self;
+
+            fn deserialize<D: Deserializer<'de>>(
+                self,
+                deserializer: D,
+            ) -> Result<Self::Value, D::Error> {
+                deserializer.deserialize_seq(self)
+            }
+        }
+
+        impl<'de, 'd> Visitor<'de> for SeqVisitor<'d> {
+            type Value = Self;
 
             fn expecting(&self, f: &mut Formatter) -> std::fmt::Result {
                 f.write_str("a list of descriptors")
             }
 
             fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+                while let Some(desc) = seq.next_element()? {
+                    self.descriptors.add(desc);
+                }
+
+                Ok(self)
+            }
+        }
+
+        impl<'de> Visitor<'de> for MapVisitor {
+            type Value = Descriptors;
+
+            fn expecting(&self, f: &mut Formatter) -> std::fmt::Result {
+                f.write_str("a map of sections")
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
                 let mut descriptors = Descriptors::new();
 
-                while let Some(desc) = seq.next_element()? {
-                    descriptors.add(desc);
+                while let Some(name) = map.next_key()? {
+                    descriptors.begin_section(name);
+                    map.next_value_seed(SeqVisitor { descriptors: &mut descriptors })?;
                 }
 
                 Ok(descriptors)
             }
         }
 
-        deserializer.deserialize_seq(SeqVisitor)
+        deserializer.deserialize_map(MapVisitor)
     }
 }

@@ -33,8 +33,11 @@ struct DataSet {
 
 impl DataSet {
     fn new() -> Self {
+        let mut descriptors = Descriptors::new();
+        descriptors.begin_section("".to_string());
+
         Self {
-            descriptors: Descriptors::new(),
+            descriptors,
             metadata: Document::new(),
             timestamps: vec![],
             raw_data: HashMap::new(),
@@ -94,6 +97,7 @@ impl DataSet {
     fn load_descriptors(&mut self, path: &Path) -> std::io::Result<()> {
         let file = File::open(path)?;
         self.descriptors = serde_json::from_reader(file)?;
+        self.descriptors.begin_section("".to_string());
         for key in self.raw_data.keys() {
             if !self.descriptors.contains_key(key) {
                 self.descriptors
@@ -108,15 +112,15 @@ impl DataSet {
         ids: Vec<usize>,
         range: RangeInclusive<Timestamp>,
         num_samples: usize,
-    ) -> Vec<(Rc<Descriptor>, Vec<(Timestamp, f64)>)> {
-        let mut result = Vec::with_capacity(ids.len());
+    ) -> HashMap<usize, Vec<(Timestamp, f64)>> {
+        let mut result = HashMap::with_capacity(ids.len());
 
         for id in ids {
             let desc = Rc::clone(&self.descriptors[id]);
             let values = match self.raw_data.get(&desc.key) {
                 Some(values) => values,
                 None => {
-                    result.push((desc, vec![]));
+                    result.insert(id, vec![]);
                     continue;
                 }
             };
@@ -152,7 +156,7 @@ impl DataSet {
                     .map(|idx| (self.timestamps[idx], values[idx] / desc.scale)),
             );
 
-            result.push((desc, samples));
+            result.insert(id, samples);
         }
 
         result
@@ -184,7 +188,7 @@ fn main() {
                                 main_window.update(Update::DataSetLoaded {
                                     start: *dataset.timestamps.first().unwrap(),
                                     end: *dataset.timestamps.last().unwrap(),
-                                    metrics: dataset.descriptors.iter().collect(),
+                                    metrics: dataset.descriptors.sections().clone(),
                                 });
                             }
                         }
@@ -197,7 +201,7 @@ fn main() {
                             ));
                         }
                         Ok(()) => main_window.update(Update::DescriptorsLoaded(
-                            dataset.descriptors.iter().collect(),
+                            dataset.descriptors.sections().clone(),
                         )),
                     },
                     Message::SampleMetrics(ids, range, num_samples) => {

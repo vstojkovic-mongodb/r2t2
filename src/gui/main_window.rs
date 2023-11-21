@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::ops::RangeInclusive;
 use std::rc::Rc;
 
@@ -18,10 +19,10 @@ use fltk_float::grid::{CellAlign, Grid};
 use fltk_float::{SimpleWrapper, Size};
 
 use crate::gui::menu::MenuConvenienceExt;
-use crate::metric::{Descriptor, Timestamp, TimestampFormat};
+use crate::metric::{Descriptor, Section, Timestamp, TimestampFormat};
 use crate::Message;
 
-use super::chart::ChartListView;
+use super::chart::{ChartListSection, ChartListView, SectionState};
 use super::layout::wrapper_factory;
 use super::weak_cb;
 
@@ -39,10 +40,10 @@ pub enum Update {
     DataSetLoaded {
         start: Timestamp,
         end: Timestamp,
-        metrics: Vec<Rc<Descriptor>>,
+        metrics: Vec<Section>,
     },
-    DescriptorsLoaded(Vec<Rc<Descriptor>>),
-    MetricsSampled(Vec<(Rc<Descriptor>, Vec<(Timestamp, f64)>)>),
+    DescriptorsLoaded(Vec<Section>),
+    MetricsSampled(HashMap<usize, Vec<(Timestamp, f64)>>),
 }
 
 enum State {
@@ -66,7 +67,7 @@ impl State {
 
 #[derive(Debug)]
 struct DataState {
-    metrics: Vec<Rc<Descriptor>>,
+    metrics: Vec<Section>,
     time_range: RangeInclusive<Timestamp>,
 }
 
@@ -222,32 +223,29 @@ impl MainWindow {
 
     pub fn update(&self, update: Update) {
         match update {
-            Update::DataSetLoaded { start, end, mut metrics } => {
+            Update::DataSetLoaded { start, end, metrics } => {
                 self.start_input
                     .clone()
                     .set_value(&start.to_timestamp_string());
                 self.end_input.clone().set_value(&end.to_timestamp_string());
 
-                metrics.sort_by(|lhs, rhs| lhs.name.cmp(&rhs.name));
-
                 let mut state = self.state.borrow_mut();
-                *state = State::Loaded(DataState { metrics, time_range: start..=end });
+                *state = State::Loaded(DataState::new(metrics, start..=end));
                 drop(state);
 
                 self.draw_button.clone().activate();
             }
-            Update::DescriptorsLoaded(mut descriptors) => {
+            Update::DescriptorsLoaded(metrics) => {
                 let mut state = self.state.borrow_mut();
 
-                let (mut data, selector) = match state.take() {
+                let (data, selector) = match state.take() {
                     State::Empty => return,
                     State::Loaded(data) => (data, None),
                     State::Selected { data, selector } => (data, Some(selector)),
                     State::Charted { data, selector } => (data, Some(selector)),
                 };
 
-                descriptors.sort_by(|lhs, rhs| lhs.name.cmp(&rhs.name));
-                data.metrics = descriptors;
+                let data = DataState::new(metrics, data.time_range);
                 if selector.is_none() {
                     *state = State::Loaded(data);
                     return;
@@ -255,7 +253,7 @@ impl MainWindow {
                 let selector = selector.unwrap();
 
                 self.tx.send(Message::SampleMetrics(
-                    data.metrics.iter().map(|desc| desc.id.clone()).collect(),
+                    data.descriptors().map(|desc| desc.id).collect(),
                     selector.time_range.clone(),
                     self.chart.chart_width() as _,
                 ));
@@ -269,12 +267,31 @@ impl MainWindow {
                     _ => unreachable!(),
                 };
 
+                let chart_data = data
+                    .metrics
+                    .iter()
+                    .map(|section| ChartListSection {
+                        name: ensure_section_name(section),
+                        state: SectionState::Expanded,
+                        charts: section
+                            .metrics
+                            .iter()
+                            .map(|desc| {
+                                (
+                                    Rc::clone(desc),
+                                    samples.get(&desc.id).cloned().unwrap_or_default(),
+                                )
+                            })
+                            .collect(),
+                    })
+                    .collect();
+
                 *state = State::Charted { data, selector: selector.clone() };
                 drop(state);
 
                 let mut chart = self.chart.clone();
                 chart.set_time_range(selector.time_range);
-                chart.set_data(samples);
+                chart.set_data(chart_data);
             }
         }
     }
@@ -316,7 +333,7 @@ impl MainWindow {
         };
 
         self.tx.send(Message::SampleMetrics(
-            data.metrics.iter().map(|desc| desc.id.clone()).collect(),
+            data.descriptors().map(|desc| desc.id).collect(),
             selector.time_range.clone(),
             self.chart.chart_width() as _,
         ));
@@ -351,3 +368,28 @@ impl MainWindow {
         Ok(SelectorState { time_range: start..=end })
     }
 }
+
+impl DataState {
+    fn new(mut metrics: Vec<Section>, time_range: RangeInclusive<Timestamp>) -> Self {
+        for section in metrics.iter_mut() {
+            section.metrics.sort_by(|lhs, rhs| lhs.name.cmp(&rhs.name));
+        }
+        Self { metrics, time_range }
+    }
+
+    fn descriptors(&self) -> impl Iterator<Item = &Rc<Descriptor>> {
+        self.metrics
+            .iter()
+            .flat_map(|section| section.metrics.iter())
+    }
+}
+
+fn ensure_section_name(section: &Section) -> String {
+    if section.name.is_empty() {
+        UNKNOWN_SECTION.to_string()
+    } else {
+        section.name.clone()
+    }
+}
+
+const UNKNOWN_SECTION: &str = "UNKNOWN";
