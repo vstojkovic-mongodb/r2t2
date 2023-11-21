@@ -11,7 +11,7 @@ mod key;
 mod time;
 
 pub use self::key::MetricKey;
-pub use self::time::{unix_millis_to_timestamp, Timestamp};
+pub use self::time::{unix_millis_to_timestamp, Timestamp, TimestampFormat};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Descriptor {

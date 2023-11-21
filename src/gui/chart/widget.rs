@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::ops::RangeInclusive;
 use std::rc::Rc;
 
-use chrono::{Duration, SecondsFormat};
+use chrono::Duration;
 use fltk::enums::{Align, Color, Damage, Event, Font, FrameType};
 use fltk::prelude::*;
 use fltk::table::{Table, TableContext};
@@ -10,7 +10,7 @@ use fltk::widget::Widget;
 use thousands::Separable;
 
 use crate::gui::ScopedClip;
-use crate::metric::{Descriptor, Timestamp};
+use crate::metric::{Descriptor, Timestamp, TimestampFormat};
 
 use super::{
     calculate_time_ticks, calculate_value_ticks, draw_data_fill, draw_data_line,
@@ -398,7 +398,7 @@ impl Hover {
         let time_span = (*time_range.end() - *time_range.start()).num_milliseconds();
         let x_millis = ((x - cx) as i64) * time_span / ((cw - 1) as i64);
         let x_time = *time_range.start() + Duration::milliseconds(x_millis);
-        let time_text = x_time.to_rfc3339_opts(SecondsFormat::Millis, true);
+        let time_text = x_time.to_timestamp_string();
 
         let list_row = &state.rows[row as usize];
         let closest = match list_row.data.binary_search_by_key(&x_time, |point| point.0) {

@@ -18,7 +18,7 @@ use fltk_float::grid::{CellAlign, Grid};
 use fltk_float::{SimpleWrapper, Size};
 
 use crate::gui::menu::MenuConvenienceExt;
-use crate::metric::{Descriptor, Timestamp};
+use crate::metric::{Descriptor, Timestamp, TimestampFormat};
 use crate::Message;
 
 use super::chart::ChartListView;
@@ -223,6 +223,11 @@ impl MainWindow {
     pub fn update(&self, update: Update) {
         match update {
             Update::DataSetLoaded { start, end, mut metrics } => {
+                self.start_input
+                    .clone()
+                    .set_value(&start.to_timestamp_string());
+                self.end_input.clone().set_value(&end.to_timestamp_string());
+
                 metrics.sort_by(|lhs, rhs| lhs.name.cmp(&rhs.name));
 
                 let mut state = self.state.borrow_mut();
