@@ -31,7 +31,8 @@ pub struct MainWindow {
     tx: Sender<Message>,
     start_input: Input,
     end_input: Input,
-    draw_button: Button,
+    set_zoom_button: Button,
+    reset_zoom_button: Button,
     chart: ChartListView,
     state: RefCell<State>,
 }
@@ -46,40 +47,11 @@ pub enum Update {
     MetricsSampled(HashMap<usize, Vec<(Timestamp, f64)>>),
 }
 
-enum State {
-    Empty,
-    Loaded(DataState),
-    Selected {
-        data: DataState,
-        selector: SelectorState,
-    },
-    Charted {
-        data: DataState,
-        selector: SelectorState,
-    },
-}
-
-impl State {
-    fn take(&mut self) -> Self {
-        std::mem::replace(self, State::Empty)
-    }
-}
-
-#[derive(Debug)]
-struct DataState {
+#[derive(Debug, Default)]
+struct State {
     metrics: Vec<Section>,
-    time_range: RangeInclusive<Timestamp>,
-}
-
-#[derive(Debug, Clone)]
-struct SelectorState {
-    time_range: RangeInclusive<Timestamp>,
-}
-
-impl Default for State {
-    fn default() -> Self {
-        Self::Empty
-    }
+    data_time_range: Option<RangeInclusive<Timestamp>>,
+    zoom_time_range: Option<RangeInclusive<Timestamp>>,
 }
 
 impl MainWindow {
@@ -117,6 +89,10 @@ impl MainWindow {
 
         work_area.col().add();
         work_area.col().with_stretch(1).add();
+        work_area.col().add();
+        work_area.col().with_stretch(1).add();
+        work_area.col().add();
+        work_area.col().add();
 
         work_area.row().add();
         work_area
@@ -125,14 +101,20 @@ impl MainWindow {
             .with_horz_align(CellAlign::End)
             .wrap(Frame::default().with_label("Start:"));
         let start_input = work_area.cell().unwrap().wrap(Input::default());
-
-        work_area.row().add();
         work_area
             .cell()
             .unwrap()
             .with_horz_align(CellAlign::End)
             .wrap(Frame::default().with_label("End:"));
         let end_input = work_area.cell().unwrap().wrap(Input::default());
+        let mut set_zoom_button = work_area
+            .cell()
+            .unwrap()
+            .wrap(Button::default().with_label("Set Zoom"));
+        let mut reset_zoom_button = work_area
+            .cell()
+            .unwrap()
+            .wrap(Button::default().with_label("Reset Zoom"));
 
         work_area.row().add();
         work_area
@@ -140,18 +122,12 @@ impl MainWindow {
             .unwrap()
             .with_horz_align(CellAlign::End)
             .wrap(Frame::default().with_label("Chart Size:"));
-        let mut chart_size_choice = work_area.cell().unwrap().wrap(InputChoice::default());
+        let mut chart_size_choice = work_area.span(1, 5).unwrap().wrap(InputChoice::default());
         chart_size_choice.input().set_readonly(true);
         chart_size_choice.add("Small");
         chart_size_choice.add("Medium");
         chart_size_choice.add("Large");
         chart_size_choice.set_value_index(0);
-
-        work_area.row().add();
-        let mut draw_button = work_area
-            .span(1, 2)
-            .unwrap()
-            .wrap(Button::default().with_label("Draw"));
 
         work_area
             .row()
@@ -160,7 +136,7 @@ impl MainWindow {
             .add();
         let mut chart = ChartListView::default();
         work_area
-            .span(1, 2)
+            .span(1, 6)
             .unwrap()
             .add(SimpleWrapper::new(chart.widget(), Size::default()));
 
@@ -185,7 +161,8 @@ impl MainWindow {
             tx,
             start_input,
             end_input,
-            draw_button: draw_button.clone(),
+            set_zoom_button: set_zoom_button.clone(),
+            reset_zoom_button: reset_zoom_button.clone(),
             chart: chart.clone(),
             state: Default::default(),
         });
@@ -211,8 +188,11 @@ impl MainWindow {
             }
         });
 
-        draw_button.deactivate();
-        draw_button.set_callback(weak_cb!(|this, _| this.on_draw()));
+        set_zoom_button.deactivate();
+        set_zoom_button.set_callback(weak_cb!(|this, _| this.on_set_zoom()));
+
+        reset_zoom_button.set_callback(weak_cb!(|this, _| this.on_reset_zoom()));
+        reset_zoom_button.deactivate();
 
         this
     }
@@ -224,55 +204,47 @@ impl MainWindow {
     pub fn update(&self, update: Update) {
         match update {
             Update::DataSetLoaded { start, end, metrics } => {
-                self.start_input
-                    .clone()
-                    .set_value(&start.to_timestamp_string());
-                self.end_input.clone().set_value(&end.to_timestamp_string());
-
                 let mut state = self.state.borrow_mut();
-                *state = State::Loaded(DataState::new(metrics, start..=end));
+
+                state.set_metrics(metrics);
+                state.data_time_range = Some(start..=end);
+
+                if let Some(zoom) = state.zoom_time_range.as_mut() {
+                    let zoom_start = std::cmp::max(start, *zoom.start());
+                    let zoom_end = std::cmp::max(end, *zoom.end());
+                    *zoom = zoom_start..=zoom_end;
+                }
+
+                let sample_range = state.sample_range().unwrap();
+
+                self.populate_zoom(&sample_range);
+                self.set_zoom_button.clone().activate();
+
                 drop(state);
 
-                self.draw_button.clone().activate();
+                self.request_metrics_sample();
             }
             Update::DescriptorsLoaded(metrics) => {
                 let mut state = self.state.borrow_mut();
+                state.set_metrics(metrics);
 
-                let (data, selector) = match state.take() {
-                    State::Empty => return,
-                    State::Loaded(data) => (data, None),
-                    State::Selected { data, selector } => (data, Some(selector)),
-                    State::Charted { data, selector } => (data, Some(selector)),
-                };
-
-                let data = DataState::new(metrics, data.time_range);
-                if selector.is_none() {
-                    *state = State::Loaded(data);
+                if state.data_time_range.is_none() {
                     return;
                 }
-                let selector = selector.unwrap();
 
-                self.tx.send(Message::SampleMetrics(
-                    data.descriptors().map(|desc| desc.id).collect(),
-                    selector.time_range.clone(),
-                    self.chart.chart_width() as _,
-                ));
-                *state = State::Selected { data, selector };
+                drop(state);
+
+                self.request_metrics_sample();
             }
             Update::MetricsSampled(samples) => {
-                let mut state = self.state.borrow_mut();
+                let state = self.state.borrow_mut();
 
-                let (data, selector) = match state.take() {
-                    State::Selected { data, selector } => (data, selector),
-                    _ => unreachable!(),
-                };
-
-                let chart_data = data
+                let chart_data = state
                     .metrics
                     .iter()
                     .map(|section| ChartListSection {
                         name: ensure_section_name(section),
-                        state: SectionState::Expanded,
+                        state: SectionState::Expanded, // TODO: Maintain state
                         charts: section
                             .metrics
                             .iter()
@@ -286,11 +258,12 @@ impl MainWindow {
                     })
                     .collect();
 
-                *state = State::Charted { data, selector: selector.clone() };
+                let sample_range = state.sample_range().unwrap();
+
                 drop(state);
 
                 let mut chart = self.chart.clone();
-                chart.set_time_range(selector.time_range);
+                chart.set_time_range(sample_range);
                 chart.set_data(chart_data);
             }
         }
@@ -315,9 +288,9 @@ impl MainWindow {
         }
     }
 
-    fn on_draw(&self) {
-        let selector = match self.parse_selector() {
-            Ok(tuple) => tuple,
+    fn on_set_zoom(&self) {
+        let zoom_range = match self.parse_zoom() {
+            Ok(range) => Some(range),
             Err(err) => {
                 fltk::dialog::alert_default(&err.to_string());
                 return;
@@ -325,23 +298,50 @@ impl MainWindow {
         };
 
         let mut state = self.state.borrow_mut();
-        let data = match state.take() {
-            State::Loaded(data) => data,
-            State::Selected { data, selector: _ } => data,
-            State::Charted { data, selector: _ } => data,
-            _ => unreachable!(),
-        };
+        let can_reset = state.data_time_range != zoom_range;
+        state.zoom_time_range = zoom_range;
 
-        self.tx.send(Message::SampleMetrics(
-            data.descriptors().map(|desc| desc.id).collect(),
-            selector.time_range.clone(),
-            self.chart.chart_width() as _,
-        ));
+        drop(state);
 
-        *state = State::Selected { data, selector };
+        if can_reset {
+            self.reset_zoom_button.clone().activate();
+        } else {
+            self.reset_zoom_button.clone().deactivate();
+        }
+        self.request_metrics_sample();
     }
 
-    fn parse_selector(&self) -> anyhow::Result<SelectorState> {
+    fn on_reset_zoom(&self) {
+        let mut state = self.state.borrow_mut();
+
+        state.zoom_time_range = None;
+        self.populate_zoom(state.data_time_range.as_ref().unwrap());
+
+        drop(state);
+
+        self.reset_zoom_button.clone().deactivate();
+        self.request_metrics_sample();
+    }
+
+    fn request_metrics_sample(&self) {
+        let state = self.state.borrow();
+        self.tx.send(Message::SampleMetrics(
+            state.descriptors().map(|desc| desc.id).collect(),
+            state.sample_range().unwrap(),
+            self.chart.chart_width() as _,
+        ));
+    }
+
+    fn populate_zoom(&self, zoom_time_range: &RangeInclusive<Timestamp>) {
+        self.start_input
+            .clone()
+            .set_value(&zoom_time_range.start().to_timestamp_string());
+        self.end_input
+            .clone()
+            .set_value(&zoom_time_range.end().to_timestamp_string());
+    }
+
+    fn parse_zoom(&self) -> anyhow::Result<RangeInclusive<Timestamp>> {
         let start = DateTime::parse_from_rfc3339(&self.start_input.value())
             .context("error parsing start time")?
             .into();
@@ -350,37 +350,39 @@ impl MainWindow {
             .into();
 
         let state = self.state.borrow();
-        let data = match &*state {
-            State::Loaded(data) => data,
-            State::Selected { data, selector: _ } => data,
-            State::Charted { data, selector: _ } => data,
-            _ => unreachable!(),
-        };
+        let data_time_range = state.data_time_range.as_ref().unwrap();
 
-        if !data.time_range.contains(&start) {
+        if !data_time_range.contains(&start) {
             bail!("start time out of bounds");
         }
 
-        if !data.time_range.contains(&end) {
+        if !data_time_range.contains(&end) {
             bail!("end time out of bounds");
         }
 
-        Ok(SelectorState { time_range: start..=end })
+        Ok(start..=end)
     }
 }
 
-impl DataState {
-    fn new(mut metrics: Vec<Section>, time_range: RangeInclusive<Timestamp>) -> Self {
-        for section in metrics.iter_mut() {
-            section.metrics.sort_by(|lhs, rhs| lhs.name.cmp(&rhs.name));
-        }
-        Self { metrics, time_range }
-    }
-
+impl State {
     fn descriptors(&self) -> impl Iterator<Item = &Rc<Descriptor>> {
         self.metrics
             .iter()
             .flat_map(|section| section.metrics.iter())
+    }
+
+    fn sample_range(&self) -> Option<RangeInclusive<Timestamp>> {
+        self.zoom_time_range
+            .as_ref()
+            .or_else(|| self.data_time_range.as_ref())
+            .cloned()
+    }
+
+    fn set_metrics(&mut self, metrics: Vec<Section>) {
+        self.metrics = metrics;
+        for section in self.metrics.iter_mut() {
+            section.metrics.sort_by(|lhs, rhs| lhs.name.cmp(&rhs.name));
+        }
     }
 }
 
