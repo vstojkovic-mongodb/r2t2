@@ -41,17 +41,34 @@ pub enum Update {
     DataSetLoaded {
         start: Timestamp,
         end: Timestamp,
-        metrics: Vec<Section>,
+        transients: Vec<Rc<Descriptor>>,
     },
-    DescriptorsLoaded(Vec<Section>),
+    DescriptorsLoaded {
+        sections: Vec<Section>,
+        transients: Vec<Rc<Descriptor>>,
+    },
     MetricsSampled(HashMap<usize, Vec<(Timestamp, f64)>>),
 }
 
 #[derive(Debug, Default)]
 struct State {
-    metrics: Vec<Section>,
+    sections: Vec<Section>,
+    sections_dirty: DirtyFlag,
+    transients: Vec<Rc<Descriptor>>,
     data_time_range: Option<RangeInclusive<Timestamp>>,
     zoom_time_range: Option<RangeInclusive<Timestamp>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum DirtyFlag {
+    Dirty,
+    Clean,
+}
+
+impl Default for DirtyFlag {
+    fn default() -> Self {
+        Self::Dirty
+    }
 }
 
 impl MainWindow {
@@ -203,10 +220,10 @@ impl MainWindow {
 
     pub fn update(&self, update: Update) {
         match update {
-            Update::DataSetLoaded { start, end, metrics } => {
+            Update::DataSetLoaded { start, end, transients } => {
                 let mut state = self.state.borrow_mut();
 
-                state.set_metrics(metrics);
+                state.set_transients(transients);
                 state.data_time_range = Some(start..=end);
 
                 if let Some(zoom) = state.zoom_time_range.as_mut() {
@@ -224,9 +241,10 @@ impl MainWindow {
 
                 self.request_metrics_sample();
             }
-            Update::DescriptorsLoaded(metrics) => {
+            Update::DescriptorsLoaded { sections, transients } => {
                 let mut state = self.state.borrow_mut();
-                state.set_metrics(metrics);
+                state.set_sections(sections);
+                state.set_transients(transients);
 
                 if state.data_time_range.is_none() {
                     return;
@@ -237,14 +255,18 @@ impl MainWindow {
                 self.request_metrics_sample();
             }
             Update::MetricsSampled(samples) => {
-                let state = self.state.borrow_mut();
+                let mut state = self.state.borrow_mut();
 
-                let chart_data = state
-                    .metrics
-                    .iter()
-                    .map(|section| ChartListSection {
-                        name: ensure_section_name(section),
-                        state: SectionState::Expanded, // TODO: Maintain state
+                let mut chart_data = Vec::with_capacity(state.sections.len() + 1);
+                for (idx, section) in state.sections.iter().enumerate() {
+                    let section_state = if let DirtyFlag::Dirty = state.sections_dirty {
+                        SectionState::Expanded
+                    } else {
+                        self.chart.section_state(idx)
+                    };
+                    chart_data.push(ChartListSection {
+                        name: section.name.clone(),
+                        state: section_state,
                         charts: section
                             .metrics
                             .iter()
@@ -255,8 +277,28 @@ impl MainWindow {
                                 )
                             })
                             .collect(),
-                    })
-                    .collect();
+                    });
+                }
+                let transients_state = if let DirtyFlag::Dirty = state.sections_dirty {
+                    SectionState::Expanded
+                } else {
+                    self.chart.section_state(self.chart.section_count() - 1)
+                };
+                chart_data.push(ChartListSection {
+                    name: UNKNOWN_SECTION.to_string(),
+                    state: transients_state,
+                    charts: state
+                        .transients
+                        .iter()
+                        .map(|desc| {
+                            (
+                                Rc::clone(desc),
+                                samples.get(&desc.id).cloned().unwrap_or_default(),
+                            )
+                        })
+                        .collect(),
+                });
+                state.sections_dirty = DirtyFlag::Clean;
 
                 let sample_range = state.sample_range().unwrap();
 
@@ -366,9 +408,10 @@ impl MainWindow {
 
 impl State {
     fn descriptors(&self) -> impl Iterator<Item = &Rc<Descriptor>> {
-        self.metrics
+        self.sections
             .iter()
             .flat_map(|section| section.metrics.iter())
+            .chain(self.transients.iter())
     }
 
     fn sample_range(&self) -> Option<RangeInclusive<Timestamp>> {
@@ -378,19 +421,17 @@ impl State {
             .cloned()
     }
 
-    fn set_metrics(&mut self, metrics: Vec<Section>) {
-        self.metrics = metrics;
-        for section in self.metrics.iter_mut() {
+    fn set_sections(&mut self, sections: Vec<Section>) {
+        self.sections = sections;
+        self.sections_dirty = DirtyFlag::Dirty;
+        for section in self.sections.iter_mut() {
             section.metrics.sort_by(|lhs, rhs| lhs.name.cmp(&rhs.name));
         }
     }
-}
 
-fn ensure_section_name(section: &Section) -> String {
-    if section.name.is_empty() {
-        UNKNOWN_SECTION.to_string()
-    } else {
-        section.name.clone()
+    fn set_transients(&mut self, transients: Vec<Rc<Descriptor>>) {
+        self.transients = transients;
+        self.transients.sort_by(|lhs, rhs| lhs.name.cmp(&rhs.name));
     }
 }
 

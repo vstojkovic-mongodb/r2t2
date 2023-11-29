@@ -33,11 +33,8 @@ struct DataSet {
 
 impl DataSet {
     fn new() -> Self {
-        let mut descriptors = Descriptors::new();
-        descriptors.begin_section("".to_string());
-
         Self {
-            descriptors,
+            descriptors: Descriptors::new(),
             metadata: Document::new(),
             timestamps: vec![],
             raw_data: HashMap::new(),
@@ -97,7 +94,6 @@ impl DataSet {
     fn load_descriptors(&mut self, path: &Path) -> std::io::Result<()> {
         let file = File::open(path)?;
         self.descriptors = serde_json::from_reader(file)?;
-        self.descriptors.begin_section("".to_string());
         for key in self.raw_data.keys() {
             if !self.descriptors.contains_key(key) {
                 self.descriptors
@@ -188,7 +184,7 @@ fn main() {
                                 main_window.update(Update::DataSetLoaded {
                                     start: *dataset.timestamps.first().unwrap(),
                                     end: *dataset.timestamps.last().unwrap(),
-                                    metrics: dataset.descriptors.sections().clone(),
+                                    transients: dataset.descriptors.transients().clone(),
                                 });
                             }
                         }
@@ -200,9 +196,10 @@ fn main() {
                                 err
                             ));
                         }
-                        Ok(()) => main_window.update(Update::DescriptorsLoaded(
-                            dataset.descriptors.sections().clone(),
-                        )),
+                        Ok(()) => main_window.update(Update::DescriptorsLoaded {
+                            sections: dataset.descriptors.sections().clone(),
+                            transients: dataset.descriptors.transients().clone(),
+                        }),
                     },
                     Message::SampleMetrics(ids, range, num_samples) => {
                         main_window.update(Update::MetricsSampled(dataset.sample_metrics(

@@ -35,6 +35,12 @@ pub struct Descriptors {
     by_id: Vec<Rc<Descriptor>>,
     by_key: HashMap<MetricKey, Vec<Rc<Descriptor>>>,
     sections: Vec<Section>,
+    transients: Vec<Rc<Descriptor>>,
+}
+
+pub struct SectionBuilder<'o> {
+    owner: &'o mut Descriptors,
+    idx: usize,
 }
 
 impl Descriptor {
@@ -65,23 +71,19 @@ impl Descriptors {
             by_id: Vec::new(),
             by_key: HashMap::new(),
             sections: Vec::new(),
+            transients: Vec::new(),
         }
     }
 
-    pub fn begin_section(&mut self, name: String) {
+    pub fn begin_section(&mut self, name: String) -> SectionBuilder {
+        let idx = self.sections.len();
         self.sections.push(Section { name, metrics: Vec::new() });
+        SectionBuilder { owner: self, idx }
     }
 
-    pub fn add(&mut self, mut desc: Descriptor) {
-        desc.id = self.by_id.len();
-        let desc = Rc::new(desc);
-
-        self.by_id.push(Rc::clone(&desc));
-        self.by_key
-            .entry(desc.key.clone())
-            .or_insert_with(Vec::new)
-            .push(Rc::clone(&desc));
-        self.sections.last_mut().unwrap().metrics.push(desc);
+    pub fn add(&mut self, desc: Descriptor) {
+        let desc = self.add_descriptor(desc);
+        self.transients.push(desc);
     }
 
     pub fn contains_key(&self, key: &MetricKey) -> bool {
@@ -90,6 +92,23 @@ impl Descriptors {
 
     pub fn sections(&self) -> &Vec<Section> {
         &self.sections
+    }
+
+    pub fn transients(&self) -> &Vec<Rc<Descriptor>> {
+        &self.transients
+    }
+
+    fn add_descriptor(&mut self, mut desc: Descriptor) -> Rc<Descriptor> {
+        desc.id = self.by_id.len();
+        let desc = Rc::new(desc);
+
+        self.by_id.push(Rc::clone(&desc));
+        self.by_key
+            .entry(desc.key.clone())
+            .or_insert_with(Vec::new)
+            .push(Rc::clone(&desc));
+
+        desc
     }
 }
 
@@ -104,7 +123,7 @@ impl<'de> Deserialize<'de> for Descriptors {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         struct MapVisitor;
         struct SeqVisitor<'d> {
-            descriptors: &'d mut Descriptors,
+            section: SectionBuilder<'d>,
         }
 
         impl<'de, 'd> DeserializeSeed<'de> for SeqVisitor<'d> {
@@ -125,9 +144,9 @@ impl<'de> Deserialize<'de> for Descriptors {
                 f.write_str("a list of descriptors")
             }
 
-            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            fn visit_seq<A: SeqAccess<'de>>(mut self, mut seq: A) -> Result<Self::Value, A::Error> {
                 while let Some(desc) = seq.next_element()? {
-                    self.descriptors.add(desc);
+                    self.section.add(desc);
                 }
 
                 Ok(self)
@@ -145,8 +164,8 @@ impl<'de> Deserialize<'de> for Descriptors {
                 let mut descriptors = Descriptors::new();
 
                 while let Some(name) = map.next_key()? {
-                    descriptors.begin_section(name);
-                    map.next_value_seed(SeqVisitor { descriptors: &mut descriptors })?;
+                    let section = descriptors.begin_section(name);
+                    map.next_value_seed(SeqVisitor { section })?;
                 }
 
                 Ok(descriptors)
@@ -154,5 +173,12 @@ impl<'de> Deserialize<'de> for Descriptors {
         }
 
         deserializer.deserialize_map(MapVisitor)
+    }
+}
+
+impl<'o> SectionBuilder<'o> {
+    pub fn add(&mut self, desc: Descriptor) {
+        let desc = self.owner.add_descriptor(desc);
+        self.owner.sections[self.idx].metrics.push(desc);
     }
 }

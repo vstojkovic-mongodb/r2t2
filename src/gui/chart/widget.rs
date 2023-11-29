@@ -52,6 +52,7 @@ struct ChartListState {
     hover_style: HoverStyle,
     time_axis: Option<TimeAxis>,
     charts: Vec<Chart>,
+    sections: Vec<Section>,
     rows: Vec<ChartListRow>,
     hover: Option<Hover>,
 }
@@ -79,15 +80,15 @@ struct Chart {
     data: ChartData,
 }
 
+struct Section {
+    name: String,
+    chart_idx_range: Range<usize>,
+    state: SectionState,
+}
+
 enum ChartListRow {
-    Section {
-        name: String,
-        chart_idx_range: Range<usize>,
-        state: SectionState,
-    },
-    Chart {
-        chart_idx: usize,
-    },
+    Section(usize),
+    Chart(usize),
 }
 
 impl std::ops::Not for SectionState {
@@ -138,6 +139,7 @@ impl ChartListView {
             hover_style: Default::default(),
             time_axis: None,
             charts: Vec::new(),
+            sections: Vec::new(),
             rows: Vec::new(),
             hover: None,
         };
@@ -224,26 +226,39 @@ impl ChartListView {
         let mut state = self.state.borrow_mut();
 
         let value_ticks = state.value_ticks;
-        state.rows = Vec::new();
-        state.charts = Vec::new();
+        state.rows.clear();
+        state.charts.clear();
+        state.sections.clear();
         for section in data {
             let start_idx = state.charts.len();
             let end_idx = start_idx + section.charts.len();
-            state.rows.push(ChartListRow::Section {
+            let section_idx = state.sections.len();
+            state.rows.push(ChartListRow::Section(section_idx));
+            state.sections.push(Section {
                 name: section.name,
                 chart_idx_range: start_idx..end_idx,
                 state: section.state,
             });
 
             for (desc, points) in section.charts {
-                let chart_idx = state.charts.len();
-                state.rows.push(ChartListRow::Chart { chart_idx });
+                if let SectionState::Expanded = section.state {
+                    let chart_idx = state.charts.len();
+                    state.rows.push(ChartListRow::Chart(chart_idx));
+                }
                 state.charts.push(Chart::new(desc, points, value_ticks));
             }
         }
 
         drop(state);
         self.update_rows();
+    }
+
+    pub fn section_count(&self) -> usize {
+        self.state.borrow().sections.len()
+    }
+
+    pub fn section_state(&self, idx: usize) -> SectionState {
+        self.state.borrow().sections[idx].state
     }
 
     #[allow(dead_code)]
@@ -420,26 +435,24 @@ impl ChartListView {
 
         {
             let mut state = state.borrow_mut();
-            let (chart_idx_range, section_state) = match state.rows[row] {
-                ChartListRow::Section { ref chart_idx_range, ref mut state, .. } => {
-                    (chart_idx_range, state)
-                }
+            let section = match state.rows[row] {
+                ChartListRow::Section(idx) => &mut state.sections[idx],
                 _ => return,
             };
 
-            *section_state = !*section_state;
+            section.state = !section.state;
 
-            match &*section_state {
+            match &section.state {
                 SectionState::Expanded => {
-                    for (offset, chart_idx) in chart_idx_range.clone().enumerate() {
+                    for (offset, chart_idx) in section.chart_idx_range.clone().enumerate() {
                         state
                             .rows
-                            .insert(row + offset + 1, ChartListRow::Chart { chart_idx });
+                            .insert(row + offset + 1, ChartListRow::Chart(chart_idx));
                     }
                 }
                 SectionState::Collapsed => {
                     let start = row + 1;
-                    let end = start + chart_idx_range.end - chart_idx_range.start;
+                    let end = start + section.chart_idx_range.end - section.chart_idx_range.start;
                     state.rows.drain(start..end);
                 }
             }
@@ -489,8 +502,8 @@ impl Hover {
             return None;
         }
         let chart = match &state.rows[row as usize] {
-            ChartListRow::Section { .. } => return None,
-            ChartListRow::Chart { chart_idx } => &state.charts[*chart_idx],
+            ChartListRow::Section(_) => return None,
+            ChartListRow::Chart(chart_idx) => &state.charts[*chart_idx],
         };
         let time_range = &state.time_axis.as_ref()?.range;
 
@@ -596,17 +609,17 @@ fn draw_cell(
             draw_time_tick_labels(x, y, w, h, time_axis, &state.style);
         }
         TableContext::Cell if col == 0 => match &state.rows[row as usize] {
-            ChartListRow::Chart { chart_idx } => {
+            ChartListRow::Chart(chart_idx) => {
                 let chart = &state.charts[*chart_idx];
                 draw_value_tick_labels(x, chart_y, w, chart_h, &chart.value_axis, &state.style);
             }
-            ChartListRow::Section { name, state: section_state, .. } => {
-                draw_section_heading(table, row, name, *section_state);
+            ChartListRow::Section(section_idx) => {
+                draw_section_heading(table, row, &state.sections[*section_idx]);
             }
         },
         TableContext::Cell if col == 1 => {
             match &state.rows[row as usize] {
-                ChartListRow::Chart { chart_idx } => {
+                ChartListRow::Chart(chart_idx) => {
                     let chart = &state.charts[*chart_idx];
                     draw_data_fill(
                         x,
@@ -631,7 +644,7 @@ fn draw_cell(
             }
 
             match &state.rows[row as usize] {
-                ChartListRow::Chart { chart_idx } => {
+                ChartListRow::Chart(chart_idx) => {
                     let chart = &state.charts[*chart_idx];
                     draw_value_tick_lines(x, chart_y, w, chart_h, &chart.value_axis, &state.style);
                     draw_data_line(
@@ -645,13 +658,13 @@ fn draw_cell(
                         &state.style,
                     );
                 }
-                ChartListRow::Section { name, state: section_state, .. } => {
-                    draw_section_heading(table, row, name, *section_state);
+                ChartListRow::Section(section_idx) => {
+                    draw_section_heading(table, row, &state.sections[*section_idx]);
                 }
             };
         }
         TableContext::Cell if col == 2 => match &state.rows[row as usize] {
-            ChartListRow::Chart { chart_idx } => {
+            ChartListRow::Chart(chart_idx) => {
                 let text = &state.charts[*chart_idx].desc.name;
                 fltk::draw::set_font(table.label_font(), table.label_size());
                 fltk::draw::set_draw_color(table.label_color());
@@ -664,8 +677,8 @@ fn draw_cell(
                     Align::Left,
                 );
             }
-            ChartListRow::Section { name, state: section_state, .. } => {
-                draw_section_heading(table, row, name, *section_state);
+            ChartListRow::Section(section_idx) => {
+                draw_section_heading(table, row, &state.sections[*section_idx]);
             }
         },
         TableContext::EndPage => {
@@ -693,12 +706,12 @@ fn draw_cell(
     }
 }
 
-fn draw_section_heading(table: &Table, row: i32, name: &str, state: SectionState) {
-    let glyph = match state {
+fn draw_section_heading(table: &Table, row: i32, section: &Section) {
+    let glyph = match section.state {
         SectionState::Expanded => "@2>",
         SectionState::Collapsed => "@>",
     };
-    let text = format!("{} {}", glyph, name);
+    let text = format!("{} {}", glyph, &section.name);
     let (x, y, _, _) = table.find_cell(TableContext::Cell, row, 0).unwrap();
 
     fltk::draw::set_font(table.label_font(), table.label_size());
